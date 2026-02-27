@@ -17,13 +17,14 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.google.android.material.button.MaterialButton
+import com.google.android.material.floatingactionbutton.FloatingActionButton
 
 class MainActivity : AppCompatActivity() {
 
     private var agentService: AgentService? = null
     private var isBound = false
     private lateinit var tvTerminal: TextView
-    private lateinit var btnMic: MaterialButton
+    private lateinit var btnMic: FloatingActionButton
     private lateinit var btnDisconnect: MaterialButton
     private lateinit var tvStatus: TextView
 
