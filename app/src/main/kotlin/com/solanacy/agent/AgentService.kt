@@ -37,7 +37,7 @@ class AgentService : Service() {
     private var audioRecord: AudioRecord? = null
     private var audioTrack: AudioTrack? = null
     private val isRecording = AtomicBoolean(false)
-    private val audioOutputQueue = LinkedBlockingQueue<ByteArray>(100)
+    private val audioOutputQueue = LinkedBlockingQueue<ByteArray>(200)
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var pingJob: Job? = null
     private var reconnectJob: Job? = null
@@ -163,9 +163,8 @@ class AgentService : Service() {
     private fun startAudioStreaming() {
         try {
             val inputSampleRate = 16000
-            // 100ms chunk = 1600 samples = 3200 bytes
-            val chunkSamples = 1600
-            val chunkBytes = chunkSamples * 2
+            // pharmacy same chunk size: 4096
+            val chunkSamples = 4096
 
             val minBuffer = AudioRecord.getMinBufferSize(
                 inputSampleRate,
@@ -178,7 +177,7 @@ class AgentService : Service() {
                 return
             }
 
-            val recordBufferSize = maxOf(minBuffer, chunkBytes * 2)
+            val recordBufferSize = maxOf(minBuffer, chunkSamples * 2 * 2)
 
             val ar = AudioRecord(
                 MediaRecorder.AudioSource.VOICE_COMMUNICATION,
@@ -194,14 +193,13 @@ class AgentService : Service() {
                 return
             }
 
-            // AudioTrack for playback
             val outputSampleRate = 24000
             val outMinBuffer = AudioTrack.getMinBufferSize(
                 outputSampleRate,
                 AudioFormat.CHANNEL_OUT_MONO,
                 AudioFormat.ENCODING_PCM_16BIT
             )
-            val outBufferSize = maxOf(outMinBuffer, 8192)
+            val outBufferSize = maxOf(outMinBuffer, 16384)
 
             val at = AudioTrack.Builder()
                 .setAudioFormat(AudioFormat.Builder()
@@ -222,7 +220,7 @@ class AgentService : Service() {
             callback?.onLog("🎙️ Microphone active. Speak now!")
             callback?.onStatusChanged("Listening...")
 
-            // Playback job — separate thread
+            // Playback job
             playbackJob = scope.launch(Dispatchers.IO) {
                 while (isRecording.get()) {
                     try {
@@ -247,11 +245,12 @@ class AgentService : Service() {
                                 bytes[i * 2 + 1] = (buffer[i].toInt() shr 8 and 0xFF).toByte()
                             }
                             val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+                            // ✅ pharmacy এর মতো snake_case + "audio/pcm" 
                             val json = JSONObject().apply {
-                                put("realtimeInput", JSONObject().apply {
-                                    put("mediaChunks", JSONArray().apply {
+                                put("realtime_input", JSONObject().apply {
+                                    put("media_chunks", JSONArray().apply {
                                         put(JSONObject().apply {
-                                            put("mimeType", "audio/pcm;rate=16000")
+                                            put("mime_type", "audio/pcm")
                                             put("data", base64)
                                         })
                                     })
@@ -291,7 +290,6 @@ class AgentService : Service() {
                     if (inlineData != null) {
                         try {
                             val audioData = Base64.decode(inlineData.getString("data"), Base64.NO_WRAP)
-                            // Queue এ দাও — blocking করবে না
                             audioOutputQueue.offer(audioData)
                         } catch (e: Exception) {}
                     }
@@ -314,9 +312,10 @@ class AgentService : Service() {
                         put("response", JSONObject().apply { put("result", result) })
                     })
                 }
+                // ✅ pharmacy এর মতো snake_case
                 wsClient?.send(JSONObject().apply {
-                    put("toolResponse", JSONObject().apply {
-                        put("functionResponses", responses)
+                    put("tool_response", JSONObject().apply {
+                        put("function_responses", responses)
                     })
                 }.toString())
             }
