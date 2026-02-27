@@ -42,18 +42,13 @@ class AgentService : Service() {
     private var audioTrack: AudioTrack? = null
     private val isRecording = AtomicBoolean(false)
     private val isAiSpeaking = AtomicBoolean(false)
-    
-    // 🚀 High-performance Audio Jitter Buffer
     private val audioOutputQueue = LinkedBlockingQueue<ByteArray>(1000)
-    
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var pingJob: Job? = null
     private var reconnectJob: Job? = null
     private var recordingJob: Job? = null
     private var playbackJob: Job? = null
     private var gitHub: GitHubApi? = null
-    
-    // 🚀 Power & Wifi Locks
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
 
@@ -91,13 +86,11 @@ class AgentService : Service() {
         try {
             val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
             wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Solanacy::AgentWakeLock")
-            wakeLock?.acquire(12 * 60 * 60 * 1000L) // 12 hours lock
+            wakeLock?.acquire(12 * 60 * 60 * 1000L) 
             val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
             wifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "Solanacy::AgentWifiLock")
             wifiLock?.acquire()
-        } catch (e: Exception) {
-            callback?.onLog("⚠️ Lock info: ${e.message}")
-        }
+        } catch (e: Exception) {}
     }
 
     private fun releaseLocks() {
@@ -106,16 +99,11 @@ class AgentService : Service() {
     }
 
     fun toggle() {
-        if (isConnected || shouldReconnect) disconnect()
-        else connect()
+        if (isConnected || shouldReconnect) disconnect() else connect()
     }
 
     fun connect() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            callback?.onLog("⚠️ Microphone permission not granted!")
-            callback?.onStatusChanged("Disconnected")
-            return
-        }
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return
         shouldReconnect = true
         acquireLocks()
         doConnect()
@@ -123,9 +111,7 @@ class AgentService : Service() {
 
     private fun doConnect() {
         geminiReady = false
-        callback?.onLog("Connecting to Solanacy Agent...")
         callback?.onStatusChanged("Connecting...")
-
         val uri = URI(backendUrl)
         wsClient = object : WebSocketClient(uri) {
             override fun onOpen(handshakedata: ServerHandshake?) {
@@ -134,12 +120,10 @@ class AgentService : Service() {
                 callback?.onStatusChanged("Connecting...")
                 startPing()
             }
-
             override fun onMessage(message: String?) {
                 message ?: return
                 scope.launch { handleMessage(message) }
             }
-
             override fun onClose(code: Int, reason: String?, remote: Boolean) {
                 isConnected = false
                 geminiReady = false
@@ -147,23 +131,15 @@ class AgentService : Service() {
                 pingJob?.cancel()
                 if (shouldReconnect) {
                     callback?.onStatusChanged("Reconnecting...")
-                    reconnectJob = scope.launch {
-                        delay(2000)
-                        if (shouldReconnect) doConnect()
-                    }
+                    reconnectJob = scope.launch { delay(2000); if (shouldReconnect) doConnect() }
                 } else {
-                    callback?.onLog("Disconnected.")
                     callback?.onStatusChanged("Disconnected")
                 }
             }
-
-            override fun onError(ex: Exception?) {
-                callback?.onLog("⚠️ Error: ${ex?.message}")
-            }
+            override fun onError(ex: Exception?) {}
         }
-        
         wsClient?.connectionLostTimeout = 120 
-        try { wsClient?.connect() } catch (e: Exception) { callback?.onLog("⚠️ Connect failed: ${e.message}") }
+        try { wsClient?.connect() } catch (e: Exception) {}
     }
 
     fun disconnect() {
@@ -175,7 +151,6 @@ class AgentService : Service() {
         try { wsClient?.close() } catch (e: Exception) {}
         isConnected = false
         releaseLocks()
-        callback?.onLog("Disconnected by user.")
         callback?.onStatusChanged("Disconnected")
     }
 
@@ -198,7 +173,7 @@ class AgentService : Service() {
     private fun startPing() {
         pingJob = scope.launch {
             while (isConnected) {
-                delay(15000) // Fast ping
+                delay(15000)
                 try { if (wsClient?.isOpen == true) wsClient?.sendPing() } catch (e: Exception) {}
             }
         }
@@ -208,20 +183,11 @@ class AgentService : Service() {
 
     private fun startAudioStreaming() {
         try {
-            val inputSampleRate = 16000
-            val chunkSamples = 4096
-            val minBuffer = AudioRecord.getMinBufferSize(inputSampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
-            if (minBuffer <= 0) return
-
-            val ar = AudioRecord(MediaRecorder.AudioSource.VOICE_COMMUNICATION, inputSampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(minBuffer, chunkSamples * 4))
-            if (ar.state != AudioRecord.STATE_INITIALIZED) return
-
-            val outputSampleRate = 24000
-            val outMinBuffer = AudioTrack.getMinBufferSize(outputSampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
-            
+            val minBuffer = AudioRecord.getMinBufferSize(16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+            val ar = AudioRecord(MediaRecorder.AudioSource.VOICE_COMMUNICATION, 16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(minBuffer, 16384))
             val at = AudioTrack.Builder()
-                .setAudioFormat(AudioFormat.Builder().setSampleRate(outputSampleRate).setEncoding(AudioFormat.ENCODING_PCM_16BIT).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
-                .setBufferSizeInBytes(maxOf(outMinBuffer, 32768))
+                .setAudioFormat(AudioFormat.Builder().setSampleRate(24000).setEncoding(AudioFormat.ENCODING_PCM_16BIT).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
+                .setBufferSizeInBytes(32768)
                 .setTransferMode(AudioTrack.MODE_STREAM).build()
 
             audioRecord = ar
@@ -229,39 +195,46 @@ class AgentService : Service() {
             at.play()
             ar.startRecording()
             isRecording.set(true)
-            callback?.onLog("🎙️ Microphone active. Speak now!")
             callback?.onStatusChanged("Listening...")
 
             playbackJob = scope.launch(Dispatchers.IO) {
                 while (isRecording.get()) {
                     try {
                         val data = audioOutputQueue.poll(200, java.util.concurrent.TimeUnit.MILLISECONDS)
-                        if (data != null) {
-                            isAiSpeaking.set(true)
-                            audioTrack?.write(data, 0, data.size)
-                        } else {
-                            if (audioOutputQueue.isEmpty()) isAiSpeaking.set(false)
-                        }
+                        if (data != null) { isAiSpeaking.set(true); audioTrack?.write(data, 0, data.size) } 
+                        else if (audioOutputQueue.isEmpty()) isAiSpeaking.set(false)
                     } catch (e: Exception) { break }
                 }
             }
 
             recordingJob = scope.launch(Dispatchers.IO) {
-                val buffer = ShortArray(chunkSamples)
+                val buffer = ShortArray(4096)
                 while (isRecording.get() && isConnected) {
                     try {
-                        val read = ar.read(buffer, 0, chunkSamples)
+                        val read = ar.read(buffer, 0, 4096)
                         if (read > 0 && wsClient?.isOpen == true && geminiReady) {
                             var rms = 0.0
                             for (i in 0 until read) rms += buffer[i].toDouble() * buffer[i].toDouble()
                             val level = Math.sqrt(rms / read) / 32768.0
-                            if (level > 0.01 && isAiSpeaking.get()) stopAiAudio()
+                            
+                            // Echo cancellation
+                            if (level > 0.015 && isAiSpeaking.get()) stopAiAudio()
+
+                            // 🚀 FIX: NOISE GATE FOR INSTANT RESPONSE
+                            // Jodi sound level 0.01 er niche hoy (mane shudhu background noise), 
+                            // tahole pure silence (0) pathabo jate Gemini instantly kotha shuru kore!
+                            if (level < 0.01) {
+                                for (i in 0 until read) {
+                                    buffer[i] = 0
+                                }
+                            }
 
                             val bytes = ByteArray(read * 2)
-                            for (i in 0 until read) {
+                            for (i in 0 until read) { 
                                 bytes[i * 2] = (buffer[i].toInt() and 0xFF).toByte()
-                                bytes[i * 2 + 1] = (buffer[i].toInt() shr 8 and 0xFF).toByte()
+                                bytes[i * 2 + 1] = (buffer[i].toInt() shr 8 and 0xFF).toByte() 
                             }
+                            
                             val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
                             wsClient?.send(JSONObject().apply { put("realtime_input", JSONObject().apply { put("media_chunks", JSONArray().apply { put(JSONObject().apply { put("mime_type", "audio/pcm"); put("data", base64) }) }) }) }.toString())
                         }
@@ -274,45 +247,22 @@ class AgentService : Service() {
     private suspend fun handleMessage(message: String) {
         try {
             val data = JSONObject(message)
-
-            if (data.has("setupComplete")) {
-                geminiReady = true
-                callback?.onLog("✅ Gemini ready!")
-                startAudioStreaming()
-                return
-            }
-
-            val serverContent = data.optJSONObject("serverContent")
-            val modelTurn = serverContent?.optJSONObject("modelTurn")
-            val parts = modelTurn?.optJSONArray("parts")
-            if (parts != null) {
+            if (data.has("setupComplete")) { geminiReady = true; startAudioStreaming(); return }
+            data.optJSONObject("serverContent")?.optJSONObject("modelTurn")?.optJSONArray("parts")?.let { parts ->
                 for (i in 0 until parts.length()) {
-                    val part = parts.getJSONObject(i)
-                    val inlineData = part.optJSONObject("inlineData")
-                    if (inlineData != null) {
-                        try { audioOutputQueue.offer(Base64.decode(inlineData.getString("data"), Base64.NO_WRAP)) } catch (e: Exception) {}
-                    }
-                    val text = part.optString("text", "")
+                    parts.getJSONObject(i).optJSONObject("inlineData")?.let { try { audioOutputQueue.offer(Base64.decode(it.getString("data"), Base64.NO_WRAP)) } catch (e: Exception) {} }
+                    val text = parts.getJSONObject(i).optString("text", "")
                     if (text.isNotBlank()) MemoryManager.saveEvent(this, "assistant", text)
                 }
             }
-
-            val toolCall = data.optJSONObject("toolCall")
-            val functionCalls = toolCall?.optJSONArray("functionCalls")
-            if (functionCalls != null) {
+            data.optJSONObject("toolCall")?.optJSONArray("functionCalls")?.let { calls ->
                 val responses = JSONArray()
-                for (i in 0 until functionCalls.length()) {
-                    val call = functionCalls.getJSONObject(i)
+                for (i in 0 until calls.length()) {
+                    val call = calls.getJSONObject(i)
                     val name = call.getString("name")
                     val args = call.optJSONObject("args") ?: JSONObject()
                     callback?.onLog("🔧 $name")
-                    MemoryManager.saveEvent(this, "tool", "$name: ${args.toString().take(100)}")
-                    val result = dispatchTool(name, args)
-                    responses.put(JSONObject().apply {
-                        put("name", name)
-                        put("id", call.optString("id"))
-                        put("response", JSONObject().apply { put("result", result) })
-                    })
+                    responses.put(JSONObject().apply { put("name", name); put("id", call.optString("id")); put("response", JSONObject().apply { put("result", dispatchTool(name, args)) }) })
                 }
                 wsClient?.send(JSONObject().apply { put("tool_response", JSONObject().apply { put("function_responses", responses) }) }.toString())
             }
@@ -330,8 +280,6 @@ class AgentService : Service() {
                 "createFolder" -> { File(getStorageDir(), args.getString("path")).mkdirs(); "Folder created" }
                 "showStatus" -> { callback?.onLog("📡 ${args.getString("message")}"); "Status shown" }
                 "updateCurrentTask" -> { val task = args.getString("task"); MemoryManager.saveCurrentTask(task); callback?.onLog("📌 Memory: ${task.take(30)}..."); "Task saved" }
-                
-                // 🚀 NEW: Web Scraper Implementation
                 "readWebPage" -> {
                     val urlStr = args.getString("url")
                     callback?.onLog("📖 Reading Docs: $urlStr")
@@ -341,12 +289,10 @@ class AgentService : Service() {
                         conn.connectTimeout = 10000
                         conn.readTimeout = 10000
                         val rawHtml = conn.inputStream.bufferedReader().use { it.readText() }
-                        // Basic regex to strip HTML tags and extra spaces so Gemini can easily read it
                         val cleanText = rawHtml.replace(Regex("<[^>]*>"), " ").replace(Regex("\\s+"), " ")
-                        cleanText.take(8000) // 8000 characters limit to save tokens
+                        cleanText.take(8000) 
                     } catch (e: Exception) { "Error fetching URL: ${e.message}" }
                 }
-                
                 "openUrl" -> { val url = args.getString("url"); val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK); startActivity(intent); callback?.onLog("🌐 Open $url"); "Opened" }
                 "webSearch" -> { val q = args.getString("query"); val url = "https://www.google.com/search?q=${java.net.URLEncoder.encode(q, "UTF-8")}"; startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); callback?.onLog("🔍 $q"); "Searched" }
                 "githubCreateRepo" -> gitHub?.createRepo(args.getString("name"), args.optString("description", ""), args.optBoolean("isPrivate", false)) ?: "No GitHub"
@@ -355,10 +301,7 @@ class AgentService : Service() {
                     val commitMsg = args.getString("message")
                     val files = args.optJSONArray("files")
                     if (files != null && gitHub != null) {
-                        for (i in 0 until files.length()) {
-                            val f = files.getJSONObject(i)
-                            gitHub!!.pushFile(repo, f.getString("path"), f.getString("content"), commitMsg)
-                        }
+                        for (i in 0 until files.length()) { gitHub!!.pushFile(repo, files.getJSONObject(i).getString("path"), files.getJSONObject(i).getString("content"), commitMsg) }
                         callback?.onLog("🚀 Pushed to $repo"); "Pushed to $repo"
                     } else "No GitHub/files"
                 }
@@ -366,9 +309,7 @@ class AgentService : Service() {
                 "runCommand" -> {
                     val cmd = args.getString("command")
                     callback?.onLog("💻 Run: $cmd")
-                    val res = TermuxBridge.runCommand(cmd, args.optString("workDir", ""))
-                    callback?.onLog("📤 Result ready")
-                    res
+                    TermuxBridge.runCommand(cmd, args.optString("workDir", ""))
                 }
                 "n8nWebhook" -> {
                     val url = java.net.URL(args.getString("url"))
@@ -384,21 +325,7 @@ class AgentService : Service() {
         } catch (e: Exception) { "Error: ${e.message}" }
     }
 
-    private fun createNotificationChannel() {
-        getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel("agent_channel", "Solanacy Agent", NotificationManager.IMPORTANCE_LOW))
-    }
-
-    private fun buildNotification(): Notification {
-        return NotificationCompat.Builder(this, "agent_channel")
-            .setContentTitle("Solanacy Founder AI")
-            .setContentText("Agent Pro Max Running")
-            .setSmallIcon(android.R.drawable.ic_btn_speak_now)
-            .build()
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        scope.cancel()
-        disconnect()
-    }
+    private fun createNotificationChannel() { getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel("agent_channel", "Solanacy Agent", NotificationManager.IMPORTANCE_LOW)) }
+    private fun buildNotification() = NotificationCompat.Builder(this, "agent_channel").setContentTitle("Solanacy Founder AI").setContentText("Agent Pro Max Running").setSmallIcon(android.R.drawable.ic_btn_speak_now).build()
+    override fun onDestroy() { super.onDestroy(); scope.cancel(); disconnect() }
 }
