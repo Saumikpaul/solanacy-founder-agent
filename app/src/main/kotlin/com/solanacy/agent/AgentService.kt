@@ -1,10 +1,12 @@
 package com.solanacy.agent
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.AudioTrack
@@ -12,6 +14,7 @@ import android.media.MediaRecorder
 import android.os.Binder
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.*
 import org.java_websocket.client.WebSocketClient
 import org.java_websocket.handshake.ServerHandshake
@@ -34,6 +37,7 @@ class AgentService : Service() {
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var pingJob: Job? = null
     private var reconnectJob: Job? = null
+    private var gitHub: GitHubApi? = null
 
     val BACKEND_URL = "wss://solanacy-agent-backend.onrender.com?name=Saumik"
 
@@ -53,6 +57,11 @@ class AgentService : Service() {
         super.onCreate()
         createNotificationChannel()
         startForeground(1, buildNotification())
+        val token = TokenManager.getToken(this)
+        val user = TokenManager.getUser(this)
+        if (token.isNotBlank()) {
+            gitHub = GitHubApi(token, user)
+        }
     }
 
     fun toggle() {
@@ -61,6 +70,12 @@ class AgentService : Service() {
     }
 
     fun connect() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED) {
+            callback?.onLog("⚠️ Microphone permission not granted!")
+            callback?.onStatusChanged("Disconnected")
+            return
+        }
         shouldReconnect = true
         doConnect()
     }
@@ -76,7 +91,8 @@ class AgentService : Service() {
                 callback?.onLog("🚀 Connected! Solanacy Founder AI is ready.")
                 callback?.onStatusChanged("Listening...")
                 startPing()
-                startAudioStreaming()
+                try { startAudioStreaming() }
+                catch (e: Exception) { callback?.onLog("⚠️ Audio error: ${e.message}") }
             }
 
             override fun onMessage(message: String?) {
@@ -88,13 +104,13 @@ class AgentService : Service() {
                 isConnected = false
                 isRecording = false
                 pingJob?.cancel()
-                audioRecord?.stop()
-                audioTrack?.stop()
+                try { audioRecord?.stop() } catch (e: Exception) {}
+                try { audioTrack?.stop() } catch (e: Exception) {}
                 if (shouldReconnect) {
-                    callback?.onLog("⚠️ Connection lost. Reconnecting in 3s...")
+                    callback?.onLog("⚠️ Lost connection. Reconnecting in 5s...")
                     callback?.onStatusChanged("Reconnecting...")
                     reconnectJob = scope.launch {
-                        delay(3000)
+                        delay(5000)
                         if (shouldReconnect) doConnect()
                     }
                 } else {
@@ -107,7 +123,8 @@ class AgentService : Service() {
                 callback?.onLog("⚠️ Error: ${ex?.message}")
             }
         }
-        wsClient?.connect()
+        try { wsClient?.connect() }
+        catch (e: Exception) { callback?.onLog("⚠️ Connect failed: ${e.message}") }
     }
 
     fun disconnect() {
@@ -115,9 +132,9 @@ class AgentService : Service() {
         isRecording = false
         pingJob?.cancel()
         reconnectJob?.cancel()
-        wsClient?.close()
-        audioRecord?.stop()
-        audioTrack?.stop()
+        try { wsClient?.close() } catch (e: Exception) {}
+        try { audioRecord?.stop() } catch (e: Exception) {}
+        try { audioTrack?.stop() } catch (e: Exception) {}
         isConnected = false
         callback?.onLog("Disconnected by user.")
         callback?.onStatusChanged("Disconnected")
@@ -127,21 +144,17 @@ class AgentService : Service() {
         pingJob = scope.launch {
             while (isConnected) {
                 delay(20000)
-                try {
-                    if (wsClient?.isOpen == true) {
-                        wsClient?.sendPing()
-                    }
-                } catch (e: Exception) { }
+                try { if (wsClient?.isOpen == true) wsClient?.sendPing() }
+                catch (e: Exception) {}
             }
         }
     }
 
     private fun startAudioStreaming() {
         val sampleRate = 16000
-        val bufferSize = AudioRecord.getMinBufferSize(
-            sampleRate,
-            AudioFormat.CHANNEL_IN_MONO,
-            AudioFormat.ENCODING_PCM_16BIT
+        val bufferSize = maxOf(
+            AudioRecord.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT),
+            4096
         )
 
         audioRecord = AudioRecord(
@@ -152,22 +165,29 @@ class AgentService : Service() {
             bufferSize
         )
 
+        if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
+            callback?.onLog("⚠️ Microphone init failed!")
+            return
+        }
+
+        val outBufferSize = maxOf(
+            AudioTrack.getMinBufferSize(24000, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT),
+            4096
+        )
+
         audioTrack = AudioTrack.Builder()
             .setAudioFormat(AudioFormat.Builder()
                 .setSampleRate(24000)
                 .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                 .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                 .build())
-            .setBufferSizeInBytes(AudioTrack.getMinBufferSize(
-                24000,
-                AudioFormat.CHANNEL_OUT_MONO,
-                AudioFormat.ENCODING_PCM_16BIT
-            ))
+            .setBufferSizeInBytes(outBufferSize)
             .build()
 
         audioTrack?.play()
         audioRecord?.startRecording()
         isRecording = true
+        callback?.onLog("🎙️ Microphone active. Speak now!")
 
         scope.launch {
             val buffer = ShortArray(bufferSize)
@@ -199,6 +219,11 @@ class AgentService : Service() {
     private suspend fun handleMessage(message: String) {
         try {
             val data = JSONObject(message)
+
+            if (data.has("setupComplete")) {
+                callback?.onLog("✅ Gemini setup complete!")
+                return
+            }
 
             val serverContent = data.optJSONObject("serverContent")
             val modelTurn = serverContent?.optJSONObject("modelTurn")
@@ -242,7 +267,7 @@ class AgentService : Service() {
         }
     }
 
-    private fun dispatchTool(name: String, args: JSONObject): String {
+    private suspend fun dispatchTool(name: String, args: JSONObject): String {
         return try {
             when (name) {
                 "createFile" -> {
@@ -257,7 +282,8 @@ class AgentService : Service() {
                 "readFile" -> {
                     val path = args.getString("path")
                     val file = File(getExternalFilesDir(null), path)
-                    if (file.exists()) file.readText().take(2000) else "File not found: $path"
+                    if (file.exists()) file.readText().take(2000)
+                    else "File not found: $path"
                 }
                 "editFile" -> {
                     val path = args.getString("path")
@@ -307,16 +333,37 @@ class AgentService : Service() {
                     "Searching: $query"
                 }
                 "githubCreateRepo" -> {
-                    callback?.onLog("📦 GitHub: ${args.getString("name")}")
-                    "GitHub repo: ${args.getString("name")}"
+                    val repoName = args.getString("name")
+                    val desc = args.optString("description", "")
+                    val isPrivate = args.optBoolean("isPrivate", false)
+                    val result = gitHub?.createRepo(repoName, desc, isPrivate)
+                        ?: "GitHub not configured"
+                    callback?.onLog("📦 $result")
+                    result
                 }
                 "githubPush" -> {
-                    callback?.onLog("🚀 Push: ${args.getString("repo")}")
-                    "GitHub push: ${args.getString("repo")}"
+                    val repo = args.getString("repo")
+                    val message = args.getString("message")
+                    val files = args.optJSONArray("files")
+                    if (files != null && gitHub != null) {
+                        val results = mutableListOf<String>()
+                        for (i in 0 until files.length()) {
+                            val f = files.getJSONObject(i)
+                            val path = f.getString("path")
+                            val content = f.getString("content")
+                            val r = gitHub!!.pushFile(repo, path, content, message)
+                            callback?.onLog("🚀 $r")
+                            results.add(r)
+                        }
+                        results.joinToString(", ")
+                    } else "GitHub not configured or no files"
                 }
                 "githubRead" -> {
-                    callback?.onLog("📖 Read: ${args.getString("repo")}")
-                    "GitHub read: ${args.getString("repo")}"
+                    val repo = args.getString("repo")
+                    val path = args.optString("path", "README.md")
+                    val result = gitHub?.readFile(repo, path) ?: "GitHub not configured"
+                    callback?.onLog("📖 Read: $repo/$path")
+                    result
                 }
                 else -> "Unknown: $name"
             }
@@ -324,7 +371,9 @@ class AgentService : Service() {
     }
 
     private fun createNotificationChannel() {
-        val channel = NotificationChannel("agent_channel", "Solanacy Agent", NotificationManager.IMPORTANCE_LOW)
+        val channel = NotificationChannel(
+            "agent_channel", "Solanacy Agent", NotificationManager.IMPORTANCE_LOW
+        )
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 

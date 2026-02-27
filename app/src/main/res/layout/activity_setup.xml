@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#050A0F"
+    android:padding="28dp"
+    android:gravity="center_vertical">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="SOLANACY"
+        android:textColor="#00E5A0"
+        android:textSize="22sp"
+        android:textStyle="bold"
+        android:letterSpacing="0.2"/>
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="FOUNDER AI AGENT"
+        android:textColor="#1A3A4A"
+        android:textSize="11sp"
+        android:letterSpacing="0.2"
+        android:layout_marginBottom="40dp"/>
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="GitHub Username"
+        android:textColor="#607080"
+        android:textSize="11sp"
+        android:letterSpacing="0.1"
+        android:layout_marginBottom="6dp"/>
+
+    <EditText
+        android:id="@+id/etUsername"
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:background="#0D1A24"
+        android:textColor="#00E5A0"
+        android:textColorHint="#1A3A4A"
+        android:hint="Saumikpaul"
+        android:paddingStart="14dp"
+        android:paddingEnd="14dp"
+        android:inputType="text"
+        android:fontFamily="monospace"
+        android:textSize="13sp"
+        android:layout_marginBottom="16dp"/>
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="GitHub Personal Access Token"
+        android:textColor="#607080"
+        android:textSize="11sp"
+        android:letterSpacing="0.1"
+        android:layout_marginBottom="6dp"/>
+
+    <EditText
+        android:id="@+id/etToken"
+        android:layout_width="match_parent"
+        android:layout_height="48dp"
+        android:background="#0D1A24"
+        android:textColor="#00E5A0"
+        android:textColorHint="#1A3A4A"
+        android:hint="ghp_xxxxxxxxxxxx"
+        android:paddingStart="14dp"
+        android:paddingEnd="14dp"
+        android:inputType="textPassword"
+        android:fontFamily="monospace"
+        android:textSize="13sp"
+        android:layout_marginBottom="32dp"/>
+
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/btnSave"
+        android:layout_width="match_parent"
+        android:layout_height="50dp"
+        android:text="INITIALIZE AGENT"
+        android:textColor="#050A0F"
+        android:textStyle="bold"
+        android:letterSpacing="0.1"
+        app:backgroundTint="#00E5A0"
+        xmlns:app="http://schemas.android.com/apk/res-auto"/>
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Token needs 'repo' scope. Stored locally only."
+        android:textColor="#1A3A4A"
+        android:textSize="10sp"
+        android:layout_marginTop="16dp"
+        android:layout_gravity="center"/>
+
+</LinearLayout>
