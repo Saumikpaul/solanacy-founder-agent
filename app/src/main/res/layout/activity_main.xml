@@ -4,45 +4,74 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="#070D14">
+    android:background="#050A0F">
 
-    <!-- Header -->
+    <!-- Top Header -->
     <LinearLayout
         android:id="@+id/header"
         android:layout_width="match_parent"
-        android:layout_height="60dp"
+        android:layout_height="64dp"
         android:orientation="horizontal"
-        android:paddingStart="16dp"
-        android:paddingEnd="16dp"
+        android:paddingStart="20dp"
+        android:paddingEnd="20dp"
         android:gravity="center_vertical"
-        android:background="#0D1A24"
+        android:background="#080F18"
         app:layout_constraintTop_toTopOf="parent">
 
-        <View
-            android:id="@+id/statusDot"
-            android:layout_width="10dp"
-            android:layout_height="10dp"
-            android:background="@drawable/dot_disconnected"/>
-
-        <TextView
-            android:id="@+id/tvBrand"
+        <LinearLayout
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:layout_marginStart="10dp"
-            android:text="SOLANACY FOUNDER AI"
-            android:textColor="#00E5A0"
-            android:textSize="14sp"
-            android:textStyle="bold"
-            android:letterSpacing="0.1"/>
+            android:orientation="vertical">
 
-        <TextView
-            android:id="@+id/tvStatus"
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="SOLANACY"
+                android:textColor="#00E5A0"
+                android:textSize="11sp"
+                android:letterSpacing="0.3"
+                android:textStyle="bold"/>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="FOUNDER AI AGENT"
+                android:textColor="#1A3A4A"
+                android:textSize="9sp"
+                android:letterSpacing="0.2"/>
+
+        </LinearLayout>
+
+        <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="Disconnected"
-            android:textColor="#607080"
-            android:textSize="12sp"/>
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:background="#0D1E2A"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp"
+            android:paddingTop="6dp"
+            android:paddingBottom="6dp">
+
+            <View
+                android:id="@+id/statusDot"
+                android:layout_width="6dp"
+                android:layout_height="6dp"
+                android:background="@drawable/dot_disconnected"/>
+
+            <TextView
+                android:id="@+id/tvStatus"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="6dp"
+                android:text="OFFLINE"
+                android:textColor="#607080"
+                android:textSize="10sp"
+                android:letterSpacing="0.15"
+                android:textStyle="bold"/>
+
+        </LinearLayout>
 
     </LinearLayout>
 
@@ -51,63 +80,127 @@
         android:id="@+id/terminalScroll"
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:background="#070D14"
-        android:padding="12dp"
+        android:background="#050A0F"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:paddingTop="12dp"
+        android:paddingBottom="12dp"
+        android:fillViewport="true"
         app:layout_constraintTop_toBottomOf="@id/header"
-        app:layout_constraintBottom_toBottomOf="@id/divider">
+        app:layout_constraintBottom_toTopOf="@id/bottomBar">
 
-        <TextView
-            android:id="@+id/tvTerminal"
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:textColor="#00E5A0"
-            android:textSize="12sp"
-            android:fontFamily="monospace"
-            android:text="$ Solanacy Founder AI Agent\n$ Waiting for connection...\n"/>
+            android:orientation="vertical">
+
+            <!-- System info -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="╔═══════════════════════════════╗"
+                android:textColor="#0D3A2A"
+                android:textSize="11sp"
+                android:fontFamily="monospace"/>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="║  SOLANACY FOUNDER AI v1.0     ║"
+                android:textColor="#0D3A2A"
+                android:textSize="11sp"
+                android:fontFamily="monospace"/>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="║  Saumik Paul — CEO            ║"
+                android:textColor="#0D3A2A"
+                android:textSize="11sp"
+                android:fontFamily="monospace"/>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="╚═══════════════════════════════╝"
+                android:textColor="#0D3A2A"
+                android:textSize="11sp"
+                android:fontFamily="monospace"/>
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="$ system ready. tap mic to connect."
+                android:textColor="#1A5040"
+                android:textSize="12sp"
+                android:fontFamily="monospace"/>
+
+            <TextView
+                android:id="@+id/tvTerminal"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="4dp"
+                android:textColor="#00E5A0"
+                android:textSize="12sp"
+                android:fontFamily="monospace"
+                android:lineSpacingExtra="4dp"
+                android:text=""/>
+
+        </LinearLayout>
 
     </ScrollView>
-
-    <!-- Divider -->
-    <View
-        android:id="@+id/divider"
-        android:layout_width="match_parent"
-        android:layout_height="1dp"
-        android:background="#0D2030"
-        app:layout_constraintBottom_toTopOf="@id/bottomBar"/>
 
     <!-- Bottom Bar -->
     <LinearLayout
         android:id="@+id/bottomBar"
         android:layout_width="match_parent"
-        android:layout_height="100dp"
+        android:layout_height="110dp"
         android:orientation="horizontal"
         android:gravity="center"
-        android:background="#0D1A24"
-        android:paddingStart="24dp"
-        android:paddingEnd="24dp"
+        android:background="#080F18"
+        android:paddingStart="32dp"
+        android:paddingEnd="32dp"
         app:layout_constraintBottom_toBottomOf="parent">
 
         <!-- Mic Button -->
-        <com.google.android.material.floatingactionbutton.FloatingActionButton
-            android:id="@+id/btnMic"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:src="@android:drawable/ic_btn_speak_now"
-            app:backgroundTint="#00E5A0"
-            app:tint="#070D14"
-            app:fabSize="normal"/>
+        <FrameLayout
+            android:layout_width="72dp"
+            android:layout_height="72dp">
 
-        <Space android:layout_width="32dp" android:layout_height="wrap_content"/>
+            <View
+                android:id="@+id/micRing"
+                android:layout_width="72dp"
+                android:layout_height="72dp"
+                android:background="@drawable/mic_ring"/>
 
-        <!-- Disconnect Button -->
+            <com.google.android.material.floatingactionbutton.FloatingActionButton
+                android:id="@+id/btnMic"
+                android:layout_width="64dp"
+                android:layout_height="64dp"
+                android:layout_gravity="center"
+                android:src="@android:drawable/ic_btn_speak_now"
+                app:backgroundTint="#00E5A0"
+                app:tint="#050A0F"
+                app:fabSize="normal"
+                app:elevation="8dp"/>
+
+        </FrameLayout>
+
+        <View android:layout_width="32dp" android:layout_height="1dp"/>
+
+        <!-- Disconnect -->
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnDisconnect"
             android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Disconnect"
+            android:layout_height="40dp"
+            android:text="DISCONNECT"
+            android:textSize="10sp"
+            android:letterSpacing="0.1"
             android:textColor="#FF4E6A"
             app:strokeColor="#FF4E6A"
             app:strokeWidth="1dp"
+            app:cornerRadius="4dp"
             style="@style/Widget.MaterialComponents.Button.OutlinedButton"
             android:enabled="false"/>
 

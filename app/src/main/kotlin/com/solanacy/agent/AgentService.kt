@@ -27,10 +27,13 @@ class AgentService : Service() {
     private var callback: AgentCallback? = null
     private var wsClient: WebSocketClient? = null
     private var isConnected = false
+    private var shouldReconnect = false
     private var audioRecord: AudioRecord? = null
     private var audioTrack: AudioTrack? = null
     private var isRecording = false
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var pingJob: Job? = null
+    private var reconnectJob: Job? = null
 
     val BACKEND_URL = "wss://solanacy-agent-backend.onrender.com?name=Saumik"
 
@@ -44,7 +47,6 @@ class AgentService : Service() {
     }
 
     override fun onBind(intent: Intent): IBinder = binder
-
     fun setCallback(cb: AgentCallback) { callback = cb }
 
     override fun onCreate() {
@@ -54,20 +56,26 @@ class AgentService : Service() {
     }
 
     fun toggle() {
-        if (isConnected) disconnect()
+        if (isConnected || shouldReconnect) disconnect()
         else connect()
     }
 
     fun connect() {
-        callback?.onLog("Connecting to Solanacy Agent Backend...")
+        shouldReconnect = true
+        doConnect()
+    }
+
+    private fun doConnect() {
+        callback?.onLog("Connecting to Solanacy Agent...")
         callback?.onStatusChanged("Connecting...")
 
         val uri = URI(BACKEND_URL)
         wsClient = object : WebSocketClient(uri) {
             override fun onOpen(handshakedata: ServerHandshake?) {
                 isConnected = true
-                callback?.onLog("Connected! 🚀 Solanacy Founder AI is ready.")
+                callback?.onLog("🚀 Connected! Solanacy Founder AI is ready.")
                 callback?.onStatusChanged("Listening...")
+                startPing()
                 startAudioStreaming()
             }
 
@@ -79,26 +87,53 @@ class AgentService : Service() {
             override fun onClose(code: Int, reason: String?, remote: Boolean) {
                 isConnected = false
                 isRecording = false
-                callback?.onLog("Disconnected.")
-                callback?.onStatusChanged("Disconnected")
+                pingJob?.cancel()
+                audioRecord?.stop()
+                audioTrack?.stop()
+                if (shouldReconnect) {
+                    callback?.onLog("⚠️ Connection lost. Reconnecting in 3s...")
+                    callback?.onStatusChanged("Reconnecting...")
+                    reconnectJob = scope.launch {
+                        delay(3000)
+                        if (shouldReconnect) doConnect()
+                    }
+                } else {
+                    callback?.onLog("Disconnected.")
+                    callback?.onStatusChanged("Disconnected")
+                }
             }
 
             override fun onError(ex: Exception?) {
-                callback?.onLog("Error: ${ex?.message}")
-                callback?.onStatusChanged("Error")
+                callback?.onLog("⚠️ Error: ${ex?.message}")
             }
         }
         wsClient?.connect()
     }
 
     fun disconnect() {
+        shouldReconnect = false
         isRecording = false
+        pingJob?.cancel()
+        reconnectJob?.cancel()
         wsClient?.close()
         audioRecord?.stop()
         audioTrack?.stop()
         isConnected = false
         callback?.onLog("Disconnected by user.")
         callback?.onStatusChanged("Disconnected")
+    }
+
+    private fun startPing() {
+        pingJob = scope.launch {
+            while (isConnected) {
+                delay(20000)
+                try {
+                    if (wsClient?.isOpen == true) {
+                        wsClient?.sendPing()
+                    }
+                } catch (e: Exception) { }
+            }
+        }
     }
 
     private fun startAudioStreaming() {
@@ -136,7 +171,7 @@ class AgentService : Service() {
 
         scope.launch {
             val buffer = ShortArray(bufferSize)
-            while (isRecording) {
+            while (isRecording && isConnected) {
                 val read = audioRecord?.read(buffer, 0, bufferSize) ?: 0
                 if (read > 0 && wsClient?.isOpen == true) {
                     val bytes = ByteArray(read * 2)
@@ -165,7 +200,6 @@ class AgentService : Service() {
         try {
             val data = JSONObject(message)
 
-            // Audio output
             val serverContent = data.optJSONObject("serverContent")
             val modelTurn = serverContent?.optJSONObject("modelTurn")
             val parts = modelTurn?.optJSONArray("parts")
@@ -180,7 +214,6 @@ class AgentService : Service() {
                 }
             }
 
-            // Tool calls
             val toolCall = data.optJSONObject("toolCall")
             val functionCalls = toolCall?.optJSONArray("functionCalls")
             if (functionCalls != null) {
@@ -189,22 +222,19 @@ class AgentService : Service() {
                     val call = functionCalls.getJSONObject(i)
                     val name = call.getString("name")
                     val args = call.optJSONObject("args") ?: JSONObject()
-                    callback?.onLog("🔧 Tool: $name")
+                    callback?.onLog("🔧 $name")
                     val result = dispatchTool(name, args)
                     responses.put(JSONObject().apply {
                         put("name", name)
                         put("id", call.optString("id"))
-                        put("response", JSONObject().apply {
-                            put("result", result)
-                        })
+                        put("response", JSONObject().apply { put("result", result) })
                     })
                 }
-                val response = JSONObject().apply {
+                wsClient?.send(JSONObject().apply {
                     put("tool_response", JSONObject().apply {
                         put("function_responses", responses)
                     })
-                }
-                wsClient?.send(response.toString())
+                }.toString())
             }
 
         } catch (e: Exception) {
@@ -227,8 +257,7 @@ class AgentService : Service() {
                 "readFile" -> {
                     val path = args.getString("path")
                     val file = File(getExternalFilesDir(null), path)
-                    if (file.exists()) file.readText().take(2000)
-                    else "File not found: $path"
+                    if (file.exists()) file.readText().take(2000) else "File not found: $path"
                 }
                 "editFile" -> {
                     val path = args.getString("path")
@@ -240,8 +269,7 @@ class AgentService : Service() {
                 }
                 "deleteFile" -> {
                     val path = args.getString("path")
-                    val file = File(getExternalFilesDir(null), path)
-                    file.delete()
+                    File(getExternalFilesDir(null), path).delete()
                     callback?.onLog("🗑️ Deleted: $path")
                     "File deleted: $path"
                 }
@@ -253,14 +281,12 @@ class AgentService : Service() {
                 }
                 "createFolder" -> {
                     val path = args.getString("path")
-                    val dir = File(getExternalFilesDir(null), path)
-                    dir.mkdirs()
-                    callback?.onLog("📁 Created folder: $path")
+                    File(getExternalFilesDir(null), path).mkdirs()
+                    callback?.onLog("📁 Created: $path")
                     "Folder created: $path"
                 }
                 "showStatus" -> {
-                    val msg = args.getString("message")
-                    callback?.onLog("📡 $msg")
+                    callback?.onLog("📡 ${args.getString("message")}")
                     "Status shown"
                 }
                 "openUrl" -> {
@@ -268,7 +294,7 @@ class AgentService : Service() {
                     val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url))
                     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     startActivity(intent)
-                    callback?.onLog("🌐 Opening: $url")
+                    callback?.onLog("🌐 $url")
                     "Opening $url"
                 }
                 "webSearch" -> {
@@ -277,47 +303,35 @@ class AgentService : Service() {
                     val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url))
                     intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     startActivity(intent)
-                    callback?.onLog("🔍 Searching: $query")
-                    "Searching for $query"
+                    callback?.onLog("🔍 $query")
+                    "Searching: $query"
                 }
                 "githubCreateRepo" -> {
-                    val repoName = args.getString("name")
-                    callback?.onLog("📦 GitHub repo creation requested: $repoName")
-                    "GitHub repo creation: use gh CLI with repo name $repoName"
+                    callback?.onLog("📦 GitHub: ${args.getString("name")}")
+                    "GitHub repo: ${args.getString("name")}"
                 }
                 "githubPush" -> {
-                    val repo = args.getString("repo")
-                    val msg = args.getString("message")
-                    callback?.onLog("🚀 GitHub push requested: $repo — $msg")
-                    "GitHub push requested for $repo"
+                    callback?.onLog("🚀 Push: ${args.getString("repo")}")
+                    "GitHub push: ${args.getString("repo")}"
                 }
                 "githubRead" -> {
-                    val repo = args.getString("repo")
-                    val path = args.optString("path", "")
-                    callback?.onLog("📖 GitHub read: $repo/$path")
-                    "GitHub read requested: $repo/$path"
+                    callback?.onLog("📖 Read: ${args.getString("repo")}")
+                    "GitHub read: ${args.getString("repo")}"
                 }
-                else -> "Unknown tool: $name"
+                else -> "Unknown: $name"
             }
-        } catch (e: Exception) {
-            "Tool error: ${e.message}"
-        }
+        } catch (e: Exception) { "Error: ${e.message}" }
     }
 
     private fun createNotificationChannel() {
-        val channel = NotificationChannel(
-            "agent_channel",
-            "Solanacy Agent",
-            NotificationManager.IMPORTANCE_LOW
-        )
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.createNotificationChannel(channel)
+        val channel = NotificationChannel("agent_channel", "Solanacy Agent", NotificationManager.IMPORTANCE_LOW)
+        getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
     private fun buildNotification(): Notification {
         return NotificationCompat.Builder(this, "agent_channel")
             .setContentTitle("Solanacy Founder AI")
-            .setContentText("Agent is running in background")
+            .setContentText("Agent running in background")
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .build()
     }

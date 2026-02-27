@@ -43,20 +43,14 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
-
         requestPermissions()
 
         binding.btnMic.setOnClickListener {
-            if (isBound) {
-                agentService?.toggle()
-            }
+            if (isBound) agentService?.toggle()
         }
 
         binding.btnDisconnect.setOnClickListener {
-            if (isBound) {
-                agentService?.disconnect()
-                binding.btnDisconnect.isEnabled = false
-            }
+            if (isBound) agentService?.disconnect()
         }
 
         val intent = Intent(this, AgentService::class.java)
@@ -65,25 +59,39 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun appendLog(message: String) {
-        binding.tvTerminal.append("\n$ $message")
+        binding.tvTerminal.append("\n› $message")
         binding.terminalScroll.post {
             binding.terminalScroll.fullScroll(ScrollView.FOCUS_DOWN)
         }
     }
 
     private fun updateStatus(status: String) {
-        binding.tvStatus.text = status
         when (status) {
-            "Connected", "Listening..." -> {
+            "Listening...", "Connected" -> {
+                binding.tvStatus.text = "LIVE"
+                binding.tvStatus.setTextColor(0xFF00E5A0.toInt())
                 binding.statusDot.setBackgroundResource(R.drawable.dot_connected)
                 binding.btnDisconnect.isEnabled = true
+                binding.btnMic.backgroundTintList = android.content.res.ColorStateList.valueOf(0xFF00E5A0.toInt())
             }
-            "Disconnected" -> {
-                binding.statusDot.setBackgroundResource(R.drawable.dot_disconnected)
+            "Reconnecting..." -> {
+                binding.tvStatus.text = "RECONNECTING"
+                binding.tvStatus.setTextColor(0xFFFFB800.toInt())
+                binding.statusDot.setBackgroundResource(R.drawable.dot_listening)
+                binding.btnDisconnect.isEnabled = true
+            }
+            "Connecting..." -> {
+                binding.tvStatus.text = "CONNECTING"
+                binding.tvStatus.setTextColor(0xFF00B8D9.toInt())
+                binding.statusDot.setBackgroundResource(R.drawable.dot_listening)
                 binding.btnDisconnect.isEnabled = false
             }
             else -> {
-                binding.statusDot.setBackgroundResource(R.drawable.dot_listening)
+                binding.tvStatus.text = "OFFLINE"
+                binding.tvStatus.setTextColor(0xFF607080.toInt())
+                binding.statusDot.setBackgroundResource(R.drawable.dot_disconnected)
+                binding.btnDisconnect.isEnabled = false
+                binding.btnMic.backgroundTintList = android.content.res.ColorStateList.valueOf(0xFF00E5A0.toInt())
             }
         }
     }
