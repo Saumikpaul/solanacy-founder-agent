@@ -181,7 +181,7 @@ class AgentService : Service() {
             val recordBufferSize = maxOf(minBuffer, chunkBytes * 2)
 
             val ar = AudioRecord(
-                MediaRecorder.AudioSource.MIC,
+                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
                 inputSampleRate,
                 AudioFormat.CHANNEL_IN_MONO,
                 AudioFormat.ENCODING_PCM_16BIT,
