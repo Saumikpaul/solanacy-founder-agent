@@ -233,6 +233,7 @@ class AgentService : Service() {
                                 })
                             }
                             wsClient?.send(json.toString())
+                            delay(20)
                         }
                     } catch (e: Exception) {
                         if (isRecording.get()) callback?.onLog("⚠️ Audio read error: ${e.message}")
