@@ -8,7 +8,6 @@ import android.app.Service
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioFormat
-import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
@@ -48,7 +47,12 @@ class AgentService : Service() {
     private var playbackJob: Job? = null
     private var gitHub: GitHubApi? = null
 
-    private val backendUrl get() = "wss://solanacy-agent-backend.onrender.com?name=${TokenManager.getUser(this)}"
+    private val backendUrl get(): String {
+        val user = TokenManager.getUser(this)
+        val memory = MemoryManager.getContextSummary()
+        val encoded = java.net.URLEncoder.encode(memory.take(500), "UTF-8")
+        return "wss://solanacy-agent-backend.onrender.com?name=$user&memory=$encoded"
+    }
 
     interface AgentCallback {
         fun onLog(message: String)
@@ -96,7 +100,7 @@ class AgentService : Service() {
         wsClient = object : WebSocketClient(uri) {
             override fun onOpen(handshakedata: ServerHandshake?) {
                 isConnected = true
-                callback?.onLog("🚀 Connected! Waiting for Gemini setup...")
+                callback?.onLog("🚀 Connected!")
                 callback?.onStatusChanged("Connecting...")
                 startPing()
             }
@@ -112,7 +116,6 @@ class AgentService : Service() {
                 stopAudioStreaming()
                 pingJob?.cancel()
                 if (shouldReconnect) {
-                    // Silent reconnect — no log spam
                     callback?.onStatusChanged("Reconnecting...")
                     reconnectJob = scope.launch {
                         delay(2000)
@@ -171,7 +174,6 @@ class AgentService : Service() {
     }
 
     private fun getStorageDir(): File {
-        // Internal storage/Solanacy folder
         val dir = File(Environment.getExternalStorageDirectory(), "Solanacy")
         if (!dir.exists()) dir.mkdirs()
         return dir
@@ -181,62 +183,40 @@ class AgentService : Service() {
         try {
             val inputSampleRate = 16000
             val chunkSamples = 4096
-
             val minBuffer = AudioRecord.getMinBufferSize(
-                inputSampleRate,
-                AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT
+                inputSampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
             )
-
-            if (minBuffer <= 0) {
-                callback?.onLog("⚠️ AudioRecord not supported!")
-                return
-            }
-
-            val recordBufferSize = maxOf(minBuffer, chunkSamples * 4)
+            if (minBuffer <= 0) { callback?.onLog("⚠️ AudioRecord not supported!"); return }
 
             val ar = AudioRecord(
                 MediaRecorder.AudioSource.VOICE_COMMUNICATION,
-                inputSampleRate,
-                AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT,
-                recordBufferSize
+                inputSampleRate, AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT, maxOf(minBuffer, chunkSamples * 4)
             )
-
             if (ar.state != AudioRecord.STATE_INITIALIZED) {
-                callback?.onLog("⚠️ Microphone init failed!")
-                ar.release()
-                return
+                callback?.onLog("⚠️ Microphone init failed!"); ar.release(); return
             }
 
             val outputSampleRate = 24000
             val outMinBuffer = AudioTrack.getMinBufferSize(
-                outputSampleRate,
-                AudioFormat.CHANNEL_OUT_MONO,
-                AudioFormat.ENCODING_PCM_16BIT
+                outputSampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT
             )
-            val outBufferSize = maxOf(outMinBuffer, 16384)
-
             val at = AudioTrack.Builder()
                 .setAudioFormat(AudioFormat.Builder()
                     .setSampleRate(outputSampleRate)
                     .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                    .build())
-                .setBufferSizeInBytes(outBufferSize)
-                .setTransferMode(AudioTrack.MODE_STREAM)
-                .build()
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
+                .setBufferSizeInBytes(maxOf(outMinBuffer, 16384))
+                .setTransferMode(AudioTrack.MODE_STREAM).build()
 
             audioRecord = ar
             audioTrack = at
             at.play()
             ar.startRecording()
             isRecording.set(true)
-
             callback?.onLog("🎙️ Microphone active. Speak now!")
             callback?.onStatusChanged("Listening...")
 
-            // Playback job
             playbackJob = scope.launch(Dispatchers.IO) {
                 while (isRecording.get()) {
                     try {
@@ -250,21 +230,17 @@ class AgentService : Service() {
                 }
             }
 
-            // Recording job
             recordingJob = scope.launch(Dispatchers.IO) {
                 val buffer = ShortArray(chunkSamples)
                 while (isRecording.get() && isConnected) {
                     try {
                         val read = ar.read(buffer, 0, chunkSamples)
                         if (read > 0 && wsClient?.isOpen == true && geminiReady) {
-
-                            // ✅ Echo cancel — user কথা বললে AI audio বন্ধ
+                            // Echo cancel
                             var rms = 0.0
                             for (i in 0 until read) rms += buffer[i].toDouble() * buffer[i].toDouble()
                             val level = Math.sqrt(rms / read) / 32768.0
-                            if (level > 0.01 && isAiSpeaking.get()) {
-                                stopAiAudio()
-                            }
+                            if (level > 0.01 && isAiSpeaking.get()) stopAiAudio()
 
                             val bytes = ByteArray(read * 2)
                             for (i in 0 until read) {
@@ -272,7 +248,7 @@ class AgentService : Service() {
                                 bytes[i * 2 + 1] = (buffer[i].toInt() shr 8 and 0xFF).toByte()
                             }
                             val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
-                            val json = JSONObject().apply {
+                            wsClient?.send(JSONObject().apply {
                                 put("realtime_input", JSONObject().apply {
                                     put("media_chunks", JSONArray().apply {
                                         put(JSONObject().apply {
@@ -281,8 +257,7 @@ class AgentService : Service() {
                                         })
                                     })
                                 })
-                            }
-                            wsClient?.send(json.toString())
+                            }.toString())
                         }
                     } catch (e: Exception) {
                         if (isRecording.get()) callback?.onLog("⚠️ Audio error: ${e.message}")
@@ -290,9 +265,7 @@ class AgentService : Service() {
                     }
                 }
             }
-        } catch (e: Exception) {
-            callback?.onLog("⚠️ Audio setup error: ${e.message}")
-        }
+        } catch (e: Exception) { callback?.onLog("⚠️ Audio setup error: ${e.message}") }
     }
 
     private suspend fun handleMessage(message: String) {
@@ -319,6 +292,11 @@ class AgentService : Service() {
                             audioOutputQueue.offer(audioData)
                         } catch (e: Exception) {}
                     }
+                    // Save text to memory
+                    val text = part.optString("text", "")
+                    if (text.isNotBlank()) {
+                        MemoryManager.saveEvent(this, "assistant", text)
+                    }
                 }
             }
 
@@ -331,6 +309,7 @@ class AgentService : Service() {
                     val name = call.getString("name")
                     val args = call.optJSONObject("args") ?: JSONObject()
                     callback?.onLog("🔧 $name")
+                    MemoryManager.saveEvent(this, "tool", "$name: ${args.toString().take(100)}")
                     val result = dispatchTool(name, args)
                     responses.put(JSONObject().apply {
                         put("name", name)
@@ -344,10 +323,7 @@ class AgentService : Service() {
                     })
                 }.toString())
             }
-
-        } catch (e: Exception) {
-            callback?.onLog("Parse error: ${e.message}")
-        }
+        } catch (e: Exception) { callback?.onLog("Parse error: ${e.message}") }
     }
 
     private suspend fun dispatchTool(name: String, args: JSONObject): String {
@@ -365,8 +341,7 @@ class AgentService : Service() {
                 "readFile" -> {
                     val path = args.getString("path")
                     val file = File(getStorageDir(), path)
-                    if (file.exists()) file.readText().take(2000)
-                    else "File not found: $path"
+                    if (file.exists()) file.readText().take(2000) else "File not found: $path"
                 }
                 "editFile" -> {
                     val path = args.getString("path")
@@ -448,6 +423,27 @@ class AgentService : Service() {
                     val result = gitHub?.readFile(repo, path) ?: "GitHub not configured"
                     callback?.onLog("📖 Read: $repo/$path")
                     result
+                }
+                "runCommand" -> {
+                    val cmd = args.getString("command")
+                    val workDir = args.optString("workDir", "")
+                    callback?.onLog("💻 Running: $cmd")
+                    val result = TermuxBridge.runCommand(cmd, workDir)
+                    callback?.onLog("📤 $result")
+                    result
+                }
+                "n8nWebhook" -> {
+                    val webhookUrl = args.getString("url")
+                    val payload = args.optJSONObject("payload") ?: JSONObject()
+                    val url = java.net.URL(webhookUrl)
+                    val conn = url.openConnection() as java.net.HttpURLConnection
+                    conn.requestMethod = "POST"
+                    conn.setRequestProperty("Content-Type", "application/json")
+                    conn.doOutput = true
+                    conn.outputStream.write(payload.toString().toByteArray())
+                    val code = conn.responseCode
+                    callback?.onLog("⚡ n8n: $code")
+                    "n8n webhook triggered: $code"
                 }
                 else -> "Unknown: $name"
             }

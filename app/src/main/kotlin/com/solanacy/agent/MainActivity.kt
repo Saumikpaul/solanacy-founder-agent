@@ -6,19 +6,26 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.IBinder
-import android.widget.ScrollView
+import android.provider.Settings
+import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import com.solanacy.agent.databinding.ActivityMainBinding
+import com.google.android.material.button.MaterialButton
 
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var binding: ActivityMainBinding
     private var agentService: AgentService? = null
     private var isBound = false
+    private lateinit var tvLog: TextView
+    private lateinit var btnMic: MaterialButton
+    private lateinit var btnDisconnect: MaterialButton
+    private lateinit var tvStatus: TextView
 
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
@@ -27,92 +34,125 @@ class MainActivity : AppCompatActivity() {
             isBound = true
             agentService?.setCallback(object : AgentService.AgentCallback {
                 override fun onLog(message: String) {
-                    runOnUiThread { appendLog(message) }
+                    runOnUiThread {
+                        tvLog.append("\n› $message")
+                        val scrollView = tvLog.parent as? android.widget.ScrollView
+                        scrollView?.post { scrollView.fullScroll(android.view.View.FOCUS_DOWN) }
+                    }
                 }
                 override fun onStatusChanged(status: String) {
-                    runOnUiThread { updateStatus(status) }
+                    runOnUiThread {
+                        tvStatus.text = "● $status".uppercase()
+                        when {
+                            status.contains("Listen") -> {
+                                tvStatus.setTextColor(0xFF00E5A0.toInt())
+                                tvStatus.backgroundTintList = android.content.res.ColorStateList.valueOf(0xFF003322.toInt())
+                            }
+                            status.contains("Connect") -> {
+                                tvStatus.setTextColor(0xFF00BFFF.toInt())
+                                tvStatus.backgroundTintList = android.content.res.ColorStateList.valueOf(0xFF001A2E.toInt())
+                            }
+                            status.contains("Reconnect") -> {
+                                tvStatus.setTextColor(0xFFFFAA00.toInt())
+                                tvStatus.backgroundTintList = android.content.res.ColorStateList.valueOf(0xFF2A1A00.toInt())
+                            }
+                            else -> {
+                                tvStatus.setTextColor(0xFFFF4444.toInt())
+                                tvStatus.backgroundTintList = android.content.res.ColorStateList.valueOf(0xFF2A0000.toInt())
+                            }
+                        }
+                    }
                 }
             })
         }
         override fun onServiceDisconnected(name: ComponentName?) {
+            agentService = null
             isBound = false
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        binding = ActivityMainBinding.inflate(layoutInflater)
-        setContentView(binding.root)
-        requestPermissions()
+        setContentView(R.layout.activity_main)
 
-        binding.btnMic.setOnClickListener {
-            if (isBound) agentService?.toggle()
+        tvLog = findViewById(R.id.tvLog)
+        btnMic = findViewById(R.id.btnMic)
+        btnDisconnect = findViewById(R.id.btnDisconnect)
+        tvStatus = findViewById(R.id.tvStatus)
+
+        // Start and bind service
+        val serviceIntent = Intent(this, AgentService::class.java)
+        startForegroundService(serviceIntent)
+        bindService(serviceIntent, serviceConnection, Context.BIND_AUTO_CREATE)
+
+        btnMic.setOnClickListener {
+            requestAllPermissions()
         }
 
-        binding.btnDisconnect.setOnClickListener {
-            if (isBound) agentService?.disconnect()
+        btnDisconnect.setOnClickListener {
+            agentService?.disconnect()
         }
 
-        val intent = Intent(this, AgentService::class.java)
-        ContextCompat.startForegroundService(this, intent)
-        bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+        // Request permissions on start
+        requestAllPermissions()
     }
 
-    private fun appendLog(message: String) {
-        binding.tvTerminal.append("\n› $message")
-        binding.terminalScroll.post {
-            binding.terminalScroll.fullScroll(ScrollView.FOCUS_DOWN)
-        }
-    }
-
-    private fun updateStatus(status: String) {
-        when (status) {
-            "Listening...", "Connected" -> {
-                binding.tvStatus.text = "LIVE"
-                binding.tvStatus.setTextColor(0xFF00E5A0.toInt())
-                binding.statusDot.setBackgroundResource(R.drawable.dot_connected)
-                binding.btnDisconnect.isEnabled = true
-                binding.btnMic.backgroundTintList = android.content.res.ColorStateList.valueOf(0xFF00E5A0.toInt())
-            }
-            "Reconnecting..." -> {
-                binding.tvStatus.text = "RECONNECTING"
-                binding.tvStatus.setTextColor(0xFFFFB800.toInt())
-                binding.statusDot.setBackgroundResource(R.drawable.dot_listening)
-                binding.btnDisconnect.isEnabled = true
-            }
-            "Connecting..." -> {
-                binding.tvStatus.text = "CONNECTING"
-                binding.tvStatus.setTextColor(0xFF00B8D9.toInt())
-                binding.statusDot.setBackgroundResource(R.drawable.dot_listening)
-                binding.btnDisconnect.isEnabled = false
-            }
-            else -> {
-                binding.tvStatus.text = "OFFLINE"
-                binding.tvStatus.setTextColor(0xFF607080.toInt())
-                binding.statusDot.setBackgroundResource(R.drawable.dot_disconnected)
-                binding.btnDisconnect.isEnabled = false
-                binding.btnMic.backgroundTintList = android.content.res.ColorStateList.valueOf(0xFF00E5A0.toInt())
-            }
-        }
-    }
-
-    private fun requestPermissions() {
-        val permissions = arrayOf(
+    private fun requestAllPermissions() {
+        // Step 1: Basic permissions
+        val permissions = mutableListOf(
             Manifest.permission.RECORD_AUDIO,
-            Manifest.permission.READ_EXTERNAL_STORAGE,
-            Manifest.permission.WRITE_EXTERNAL_STORAGE,
-            Manifest.permission.READ_CONTACTS
         )
-        val toRequest = permissions.filter {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            permissions.add(Manifest.permission.READ_EXTERNAL_STORAGE)
+            permissions.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        }
+
+        val missing = permissions.filter {
             ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
         }
-        if (toRequest.isNotEmpty()) {
-            ActivityCompat.requestPermissions(this, toRequest.toTypedArray(), 100)
+
+        if (missing.isNotEmpty()) {
+            ActivityCompat.requestPermissions(this, missing.toTypedArray(), 100)
+            return
+        }
+
+        // Step 2: All files access (Android 11+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            if (!Environment.isExternalStorageManager()) {
+                val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+                intent.data = Uri.parse("package:$packageName")
+                startActivityForResult(intent, 101)
+                return
+            }
+        }
+
+        // All permissions granted — connect!
+        agentService?.connect()
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int, permissions: Array<out String>, grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 100) {
+            // Continue to check all files access
+            requestAllPermissions()
+        }
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 101) {
+            // After all files access — connect
+            agentService?.connect()
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        if (isBound) unbindService(serviceConnection)
+        if (isBound) {
+            unbindService(serviceConnection)
+            isBound = false
+        }
     }
 }
