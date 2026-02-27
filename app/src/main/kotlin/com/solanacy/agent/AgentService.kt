@@ -8,10 +8,12 @@ import android.app.Service
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.os.Binder
+import android.os.Environment
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -37,6 +39,7 @@ class AgentService : Service() {
     private var audioRecord: AudioRecord? = null
     private var audioTrack: AudioTrack? = null
     private val isRecording = AtomicBoolean(false)
+    private val isAiSpeaking = AtomicBoolean(false)
     private val audioOutputQueue = LinkedBlockingQueue<ByteArray>(200)
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var pingJob: Job? = null
@@ -109,10 +112,10 @@ class AgentService : Service() {
                 stopAudioStreaming()
                 pingJob?.cancel()
                 if (shouldReconnect) {
-                    callback?.onLog("⚠️ Lost connection. Reconnecting in 5s...")
+                    // Silent reconnect — no log spam
                     callback?.onStatusChanged("Reconnecting...")
                     reconnectJob = scope.launch {
-                        delay(5000)
+                        delay(2000)
                         if (shouldReconnect) doConnect()
                     }
                 } else {
@@ -143,11 +146,18 @@ class AgentService : Service() {
 
     private fun stopAudioStreaming() {
         isRecording.set(false)
+        isAiSpeaking.set(false)
         recordingJob?.cancel()
         playbackJob?.cancel()
         audioOutputQueue.clear()
         try { audioRecord?.stop(); audioRecord?.release(); audioRecord = null } catch (e: Exception) {}
         try { audioTrack?.stop(); audioTrack?.release(); audioTrack = null } catch (e: Exception) {}
+    }
+
+    private fun stopAiAudio() {
+        isAiSpeaking.set(false)
+        audioOutputQueue.clear()
+        try { audioTrack?.stop(); audioTrack?.flush(); audioTrack?.play() } catch (e: Exception) {}
     }
 
     private fun startPing() {
@@ -160,10 +170,16 @@ class AgentService : Service() {
         }
     }
 
+    private fun getStorageDir(): File {
+        // Internal storage/Solanacy folder
+        val dir = File(Environment.getExternalStorageDirectory(), "Solanacy")
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
+
     private fun startAudioStreaming() {
         try {
             val inputSampleRate = 16000
-            // pharmacy same chunk size: 4096
             val chunkSamples = 4096
 
             val minBuffer = AudioRecord.getMinBufferSize(
@@ -177,7 +193,7 @@ class AgentService : Service() {
                 return
             }
 
-            val recordBufferSize = maxOf(minBuffer, chunkSamples * 2 * 2)
+            val recordBufferSize = maxOf(minBuffer, chunkSamples * 4)
 
             val ar = AudioRecord(
                 MediaRecorder.AudioSource.VOICE_COMMUNICATION,
@@ -225,8 +241,10 @@ class AgentService : Service() {
                 while (isRecording.get()) {
                     try {
                         val data = audioOutputQueue.poll(100, java.util.concurrent.TimeUnit.MILLISECONDS)
-                        if (data != null && audioTrack?.state == AudioTrack.STATE_INITIALIZED) {
+                        if (data != null) {
+                            isAiSpeaking.set(true)
                             audioTrack?.write(data, 0, data.size)
+                            if (audioOutputQueue.isEmpty()) isAiSpeaking.set(false)
                         }
                     } catch (e: Exception) { break }
                 }
@@ -239,13 +257,21 @@ class AgentService : Service() {
                     try {
                         val read = ar.read(buffer, 0, chunkSamples)
                         if (read > 0 && wsClient?.isOpen == true && geminiReady) {
+
+                            // ✅ Echo cancel — user কথা বললে AI audio বন্ধ
+                            var rms = 0.0
+                            for (i in 0 until read) rms += buffer[i].toDouble() * buffer[i].toDouble()
+                            val level = Math.sqrt(rms / read) / 32768.0
+                            if (level > 0.01 && isAiSpeaking.get()) {
+                                stopAiAudio()
+                            }
+
                             val bytes = ByteArray(read * 2)
                             for (i in 0 until read) {
                                 bytes[i * 2] = (buffer[i].toInt() and 0xFF).toByte()
                                 bytes[i * 2 + 1] = (buffer[i].toInt() shr 8 and 0xFF).toByte()
                             }
                             val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
-                            // ✅ pharmacy এর মতো snake_case + "audio/pcm" 
                             val json = JSONObject().apply {
                                 put("realtime_input", JSONObject().apply {
                                     put("media_chunks", JSONArray().apply {
@@ -312,7 +338,6 @@ class AgentService : Service() {
                         put("response", JSONObject().apply { put("result", result) })
                     })
                 }
-                // ✅ pharmacy এর মতো snake_case
                 wsClient?.send(JSONObject().apply {
                     put("tool_response", JSONObject().apply {
                         put("function_responses", responses)
@@ -331,41 +356,43 @@ class AgentService : Service() {
                 "createFile" -> {
                     val path = args.getString("path")
                     val content = args.getString("content")
-                    val file = File(getExternalFilesDir(null), path)
+                    val file = File(getStorageDir(), path)
                     file.parentFile?.mkdirs()
                     file.writeText(content)
                     callback?.onLog("✅ Created: $path")
-                    "File created at $path"
+                    "File created at ${file.absolutePath}"
                 }
                 "readFile" -> {
                     val path = args.getString("path")
-                    val file = File(getExternalFilesDir(null), path)
+                    val file = File(getStorageDir(), path)
                     if (file.exists()) file.readText().take(2000)
                     else "File not found: $path"
                 }
                 "editFile" -> {
                     val path = args.getString("path")
                     val content = args.getString("content")
-                    val file = File(getExternalFilesDir(null), path)
+                    val file = File(getStorageDir(), path)
+                    file.parentFile?.mkdirs()
                     file.writeText(content)
                     callback?.onLog("✅ Edited: $path")
-                    "File edited: $path"
+                    "File edited: ${file.absolutePath}"
                 }
                 "deleteFile" -> {
                     val path = args.getString("path")
-                    File(getExternalFilesDir(null), path).delete()
+                    File(getStorageDir(), path).delete()
                     callback?.onLog("🗑️ Deleted: $path")
                     "File deleted: $path"
                 }
                 "listFiles" -> {
                     val path = args.getString("path")
-                    val dir = File(getExternalFilesDir(null), path)
+                    val dir = if (path == "/" || path == "") getStorageDir()
+                              else File(getStorageDir(), path)
                     if (dir.exists()) dir.listFiles()?.joinToString("\n") { it.name } ?: "Empty"
                     else "Directory not found"
                 }
                 "createFolder" -> {
                     val path = args.getString("path")
-                    File(getExternalFilesDir(null), path).mkdirs()
+                    File(getStorageDir(), path).mkdirs()
                     callback?.onLog("📁 Created: $path")
                     "Folder created: $path"
                 }
