@@ -43,7 +43,7 @@ class AgentService : Service() {
     private val isRecording = AtomicBoolean(false)
     private val isAiSpeaking = AtomicBoolean(false)
     
-    // 🚀 FIX: Increased Audio Buffer Size to 1000
+    // 🚀 High-performance Audio Jitter Buffer
     private val audioOutputQueue = LinkedBlockingQueue<ByteArray>(1000)
     
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -53,7 +53,7 @@ class AgentService : Service() {
     private var playbackJob: Job? = null
     private var gitHub: GitHubApi? = null
     
-    // 🚀 FIX: WakeLock & WifiLock to prevent disconnects
+    // 🚀 Power & Wifi Locks
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
 
@@ -91,8 +91,7 @@ class AgentService : Service() {
         try {
             val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
             wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Solanacy::AgentWakeLock")
-            wakeLock?.acquire(12 * 60 * 60 * 1000L) // Max 12 hours lock
-
+            wakeLock?.acquire(12 * 60 * 60 * 1000L) // 12 hours lock
             val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
             wifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "Solanacy::AgentWifiLock")
             wifiLock?.acquire()
@@ -112,8 +111,7 @@ class AgentService : Service() {
     }
 
     fun connect() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)
-            != PackageManager.PERMISSION_GRANTED) {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             callback?.onLog("⚠️ Microphone permission not granted!")
             callback?.onStatusChanged("Disconnected")
             return
@@ -164,11 +162,8 @@ class AgentService : Service() {
             }
         }
         
-        // 🚀 FIX: Prevent aggressive disconnects by allowing 120s timeout
         wsClient?.connectionLostTimeout = 120 
-        
-        try { wsClient?.connect() }
-        catch (e: Exception) { callback?.onLog("⚠️ Connect failed: ${e.message}") }
+        try { wsClient?.connect() } catch (e: Exception) { callback?.onLog("⚠️ Connect failed: ${e.message}") }
     }
 
     fun disconnect() {
@@ -203,49 +198,29 @@ class AgentService : Service() {
     private fun startPing() {
         pingJob = scope.launch {
             while (isConnected) {
-                // 🚀 FIX: Faster ping interval (every 15 sec) to keep Render backend completely awake
-                delay(15000)
-                try { if (wsClient?.isOpen == true) wsClient?.sendPing() }
-                catch (e: Exception) {}
+                delay(15000) // Fast ping
+                try { if (wsClient?.isOpen == true) wsClient?.sendPing() } catch (e: Exception) {}
             }
         }
     }
 
-    private fun getStorageDir(): File {
-        val dir = File(Environment.getExternalStorageDirectory(), "Solanacy")
-        if (!dir.exists()) dir.mkdirs()
-        return dir
-    }
+    private fun getStorageDir() = File(Environment.getExternalStorageDirectory(), "Solanacy").apply { mkdirs() }
 
     private fun startAudioStreaming() {
         try {
             val inputSampleRate = 16000
             val chunkSamples = 4096
-            val minBuffer = AudioRecord.getMinBufferSize(
-                inputSampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
-            )
-            if (minBuffer <= 0) { callback?.onLog("⚠️ AudioRecord not supported!"); return }
+            val minBuffer = AudioRecord.getMinBufferSize(inputSampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
+            if (minBuffer <= 0) return
 
-            val ar = AudioRecord(
-                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
-                inputSampleRate, AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT, maxOf(minBuffer, chunkSamples * 4)
-            )
-            if (ar.state != AudioRecord.STATE_INITIALIZED) {
-                callback?.onLog("⚠️ Microphone init failed!"); ar.release(); return
-            }
+            val ar = AudioRecord(MediaRecorder.AudioSource.VOICE_COMMUNICATION, inputSampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, maxOf(minBuffer, chunkSamples * 4))
+            if (ar.state != AudioRecord.STATE_INITIALIZED) return
 
             val outputSampleRate = 24000
-            val outMinBuffer = AudioTrack.getMinBufferSize(
-                outputSampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT
-            )
+            val outMinBuffer = AudioTrack.getMinBufferSize(outputSampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
             
-            // 🚀 FIX: Increased AudioTrack buffer size from 16384 to 32768
             val at = AudioTrack.Builder()
-                .setAudioFormat(AudioFormat.Builder()
-                    .setSampleRate(outputSampleRate)
-                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
+                .setAudioFormat(AudioFormat.Builder().setSampleRate(outputSampleRate).setEncoding(AudioFormat.ENCODING_PCM_16BIT).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
                 .setBufferSizeInBytes(maxOf(outMinBuffer, 32768))
                 .setTransferMode(AudioTrack.MODE_STREAM).build()
 
@@ -260,7 +235,6 @@ class AgentService : Service() {
             playbackJob = scope.launch(Dispatchers.IO) {
                 while (isRecording.get()) {
                     try {
-                        // 🚀 FIX: Give network a 200ms grace period instead of 100ms
                         val data = audioOutputQueue.poll(200, java.util.concurrent.TimeUnit.MILLISECONDS)
                         if (data != null) {
                             isAiSpeaking.set(true)
@@ -278,7 +252,6 @@ class AgentService : Service() {
                     try {
                         val read = ar.read(buffer, 0, chunkSamples)
                         if (read > 0 && wsClient?.isOpen == true && geminiReady) {
-                            // Echo cancel
                             var rms = 0.0
                             for (i in 0 until read) rms += buffer[i].toDouble() * buffer[i].toDouble()
                             val level = Math.sqrt(rms / read) / 32768.0
@@ -290,24 +263,12 @@ class AgentService : Service() {
                                 bytes[i * 2 + 1] = (buffer[i].toInt() shr 8 and 0xFF).toByte()
                             }
                             val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
-                            wsClient?.send(JSONObject().apply {
-                                put("realtime_input", JSONObject().apply {
-                                    put("media_chunks", JSONArray().apply {
-                                        put(JSONObject().apply {
-                                            put("mime_type", "audio/pcm")
-                                            put("data", base64)
-                                        })
-                                    })
-                                })
-                            }.toString())
+                            wsClient?.send(JSONObject().apply { put("realtime_input", JSONObject().apply { put("media_chunks", JSONArray().apply { put(JSONObject().apply { put("mime_type", "audio/pcm"); put("data", base64) }) }) }) }.toString())
                         }
-                    } catch (e: Exception) {
-                        if (isRecording.get()) callback?.onLog("⚠️ Audio error: ${e.message}")
-                        break
-                    }
+                    } catch (e: Exception) { break }
                 }
             }
-        } catch (e: Exception) { callback?.onLog("⚠️ Audio setup error: ${e.message}") }
+        } catch (e: Exception) {}
     }
 
     private suspend fun handleMessage(message: String) {
@@ -329,16 +290,10 @@ class AgentService : Service() {
                     val part = parts.getJSONObject(i)
                     val inlineData = part.optJSONObject("inlineData")
                     if (inlineData != null) {
-                        try {
-                            val audioData = Base64.decode(inlineData.getString("data"), Base64.NO_WRAP)
-                            audioOutputQueue.offer(audioData)
-                        } catch (e: Exception) {}
+                        try { audioOutputQueue.offer(Base64.decode(inlineData.getString("data"), Base64.NO_WRAP)) } catch (e: Exception) {}
                     }
-                    // Save text to memory
                     val text = part.optString("text", "")
-                    if (text.isNotBlank()) {
-                        MemoryManager.saveEvent(this, "assistant", text)
-                    }
+                    if (text.isNotBlank()) MemoryManager.saveEvent(this, "assistant", text)
                 }
             }
 
@@ -359,139 +314,70 @@ class AgentService : Service() {
                         put("response", JSONObject().apply { put("result", result) })
                     })
                 }
-                wsClient?.send(JSONObject().apply {
-                    put("tool_response", JSONObject().apply {
-                        put("function_responses", responses)
-                    })
-                }.toString())
+                wsClient?.send(JSONObject().apply { put("tool_response", JSONObject().apply { put("function_responses", responses) }) }.toString())
             }
-        } catch (e: Exception) { callback?.onLog("Parse error: ${e.message}") }
+        } catch (e: Exception) {}
     }
 
     private suspend fun dispatchTool(name: String, args: JSONObject): String {
         return try {
             when (name) {
-                "createFile" -> {
-                    val path = args.getString("path")
-                    val content = args.getString("content")
-                    val file = File(getStorageDir(), path)
-                    file.parentFile?.mkdirs()
-                    file.writeText(content)
-                    callback?.onLog("✅ Created: $path")
-                    "File created at ${file.absolutePath}"
+                "createFile" -> { val f = File(getStorageDir(), args.getString("path")).apply { parentFile?.mkdirs(); writeText(args.getString("content")) }; callback?.onLog("✅ Created: ${f.name}"); "File created" }
+                "readFile" -> { val f = File(getStorageDir(), args.getString("path")); if (f.exists()) f.readText().take(5000) else "Not found" }
+                "editFile" -> { File(getStorageDir(), args.getString("path")).apply { parentFile?.mkdirs(); writeText(args.getString("content")) }; callback?.onLog("✅ Edited: ${args.getString("path")}"); "File edited" }
+                "deleteFile" -> { File(getStorageDir(), args.getString("path")).delete(); "Deleted" }
+                "listFiles" -> { val d = File(getStorageDir(), args.optString("path", "")); if (d.exists()) d.listFiles()?.joinToString("\n") { it.name } ?: "Empty" else "Not found" }
+                "createFolder" -> { File(getStorageDir(), args.getString("path")).mkdirs(); "Folder created" }
+                "showStatus" -> { callback?.onLog("📡 ${args.getString("message")}"); "Status shown" }
+                "updateCurrentTask" -> { val task = args.getString("task"); MemoryManager.saveCurrentTask(task); callback?.onLog("📌 Memory: ${task.take(30)}..."); "Task saved" }
+                
+                // 🚀 NEW: Web Scraper Implementation
+                "readWebPage" -> {
+                    val urlStr = args.getString("url")
+                    callback?.onLog("📖 Reading Docs: $urlStr")
+                    try {
+                        val conn = java.net.URL(urlStr).openConnection() as java.net.HttpURLConnection
+                        conn.requestMethod = "GET"
+                        conn.connectTimeout = 10000
+                        conn.readTimeout = 10000
+                        val rawHtml = conn.inputStream.bufferedReader().use { it.readText() }
+                        // Basic regex to strip HTML tags and extra spaces so Gemini can easily read it
+                        val cleanText = rawHtml.replace(Regex("<[^>]*>"), " ").replace(Regex("\\s+"), " ")
+                        cleanText.take(8000) // 8000 characters limit to save tokens
+                    } catch (e: Exception) { "Error fetching URL: ${e.message}" }
                 }
-                "readFile" -> {
-                    val path = args.getString("path")
-                    val file = File(getStorageDir(), path)
-                    if (file.exists()) file.readText().take(2000) else "File not found: $path"
-                }
-                "editFile" -> {
-                    val path = args.getString("path")
-                    val content = args.getString("content")
-                    val file = File(getStorageDir(), path)
-                    file.parentFile?.mkdirs()
-                    file.writeText(content)
-                    callback?.onLog("✅ Edited: $path")
-                    "File edited: ${file.absolutePath}"
-                }
-                "deleteFile" -> {
-                    val path = args.getString("path")
-                    File(getStorageDir(), path).delete()
-                    callback?.onLog("🗑️ Deleted: $path")
-                    "File deleted: $path"
-                }
-                "listFiles" -> {
-                    val path = args.getString("path")
-                    val dir = if (path == "/" || path == "") getStorageDir()
-                              else File(getStorageDir(), path)
-                    if (dir.exists()) dir.listFiles()?.joinToString("\n") { it.name } ?: "Empty"
-                    else "Directory not found"
-                }
-                "createFolder" -> {
-                    val path = args.getString("path")
-                    File(getStorageDir(), path).mkdirs()
-                    callback?.onLog("📁 Created: $path")
-                    "Folder created: $path"
-                }
-                "showStatus" -> {
-                    callback?.onLog("📡 ${args.getString("message")}")
-                    "Status shown"
-                }
-                "updateCurrentTask" -> {
-                    val task = args.getString("task")
-                    MemoryManager.saveCurrentTask(task)
-                    callback?.onLog("📌 Task Saved: ${task.take(30)}...")
-                    "Current task state saved successfully to memory."
-                }
-                "openUrl" -> {
-                    val url = args.getString("url")
-                    val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url))
-                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    startActivity(intent)
-                    callback?.onLog("🌐 $url")
-                    "Opening $url"
-                }
-                "webSearch" -> {
-                    val query = args.getString("query")
-                    val url = "https://www.google.com/search?q=${java.net.URLEncoder.encode(query, "UTF-8")}"
-                    val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url))
-                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    startActivity(intent)
-                    callback?.onLog("🔍 $query")
-                    "Searching: $query"
-                }
-                "githubCreateRepo" -> {
-                    val repoName = args.getString("name")
-                    val desc = args.optString("description", "")
-                    val isPrivate = args.optBoolean("isPrivate", false)
-                    val result = gitHub?.createRepo(repoName, desc, isPrivate) ?: "GitHub not configured"
-                    callback?.onLog("📦 $result")
-                    result
-                }
+                
+                "openUrl" -> { val url = args.getString("url"); val intent = Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK); startActivity(intent); callback?.onLog("🌐 Open $url"); "Opened" }
+                "webSearch" -> { val q = args.getString("query"); val url = "https://www.google.com/search?q=${java.net.URLEncoder.encode(q, "UTF-8")}"; startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); callback?.onLog("🔍 $q"); "Searched" }
+                "githubCreateRepo" -> gitHub?.createRepo(args.getString("name"), args.optString("description", ""), args.optBoolean("isPrivate", false)) ?: "No GitHub"
                 "githubPush" -> {
                     val repo = args.getString("repo")
                     val commitMsg = args.getString("message")
                     val files = args.optJSONArray("files")
                     if (files != null && gitHub != null) {
-                        val results = mutableListOf<String>()
                         for (i in 0 until files.length()) {
                             val f = files.getJSONObject(i)
-                            val path = f.getString("path")
-                            val content = f.getString("content")
-                            val r = gitHub!!.pushFile(repo, path, content, commitMsg)
-                            callback?.onLog("🚀 $r")
-                            results.add(r)
+                            gitHub!!.pushFile(repo, f.getString("path"), f.getString("content"), commitMsg)
                         }
-                        results.joinToString(", ")
-                    } else "GitHub not configured or no files"
+                        callback?.onLog("🚀 Pushed to $repo"); "Pushed to $repo"
+                    } else "No GitHub/files"
                 }
-                "githubRead" -> {
-                    val repo = args.getString("repo")
-                    val path = args.optString("path", "README.md")
-                    val result = gitHub?.readFile(repo, path) ?: "GitHub not configured"
-                    callback?.onLog("📖 Read: $repo/$path")
-                    result
-                }
+                "githubRead" -> gitHub?.readFile(args.getString("repo"), args.optString("path", "README.md")) ?: "No GitHub"
                 "runCommand" -> {
                     val cmd = args.getString("command")
-                    val workDir = args.optString("workDir", "")
-                    callback?.onLog("💻 Running: $cmd")
-                    val result = TermuxBridge.runCommand(cmd, workDir)
-                    callback?.onLog("📤 $result")
-                    result
+                    callback?.onLog("💻 Run: $cmd")
+                    val res = TermuxBridge.runCommand(cmd, args.optString("workDir", ""))
+                    callback?.onLog("📤 Result ready")
+                    res
                 }
                 "n8nWebhook" -> {
-                    val webhookUrl = args.getString("url")
-                    val payload = args.optJSONObject("payload") ?: JSONObject()
-                    val url = java.net.URL(webhookUrl)
+                    val url = java.net.URL(args.getString("url"))
                     val conn = url.openConnection() as java.net.HttpURLConnection
                     conn.requestMethod = "POST"
                     conn.setRequestProperty("Content-Type", "application/json")
                     conn.doOutput = true
-                    conn.outputStream.write(payload.toString().toByteArray())
-                    val code = conn.responseCode
-                    callback?.onLog("⚡ n8n: $code")
-                    "n8n webhook triggered: $code"
+                    conn.outputStream.write((args.optJSONObject("payload") ?: JSONObject()).toString().toByteArray())
+                    callback?.onLog("⚡ n8n: ${conn.responseCode}"); "Triggered: ${conn.responseCode}"
                 }
                 else -> "Unknown: $name"
             }
@@ -499,14 +385,13 @@ class AgentService : Service() {
     }
 
     private fun createNotificationChannel() {
-        val channel = NotificationChannel("agent_channel", "Solanacy Agent", NotificationManager.IMPORTANCE_LOW)
-        getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+        getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel("agent_channel", "Solanacy Agent", NotificationManager.IMPORTANCE_LOW))
     }
 
     private fun buildNotification(): Notification {
         return NotificationCompat.Builder(this, "agent_channel")
             .setContentTitle("Solanacy Founder AI")
-            .setContentText("Agent running in background")
+            .setContentText("Agent Pro Max Running")
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .build()
     }
