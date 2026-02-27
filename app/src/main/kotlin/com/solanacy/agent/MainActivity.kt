@@ -22,7 +22,7 @@ class MainActivity : AppCompatActivity() {
 
     private var agentService: AgentService? = null
     private var isBound = false
-    private lateinit var tvLog: TextView
+    private lateinit var tvTerminal: TextView
     private lateinit var btnMic: MaterialButton
     private lateinit var btnDisconnect: MaterialButton
     private lateinit var tvStatus: TextView
@@ -35,8 +35,8 @@ class MainActivity : AppCompatActivity() {
             agentService?.setCallback(object : AgentService.AgentCallback {
                 override fun onLog(message: String) {
                     runOnUiThread {
-                        tvLog.append("\n› $message")
-                        val scrollView = tvLog.parent as? android.widget.ScrollView
+                        tvTerminal.append("\n› $message")
+                        val scrollView = tvTerminal.parent as? android.widget.ScrollView
                         scrollView?.post { scrollView.fullScroll(android.view.View.FOCUS_DOWN) }
                     }
                 }
@@ -75,7 +75,7 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        tvLog = findViewById(R.id.tvLog)
+        tvTerminal = findViewById(R.id.tvTerminal)
         btnMic = findViewById(R.id.btnMic)
         btnDisconnect = findViewById(R.id.btnDisconnect)
         tvStatus = findViewById(R.id.tvStatus)
