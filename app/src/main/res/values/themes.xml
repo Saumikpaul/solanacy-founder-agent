@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.SolanacyAgent" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">#00E5A0</item>
+        <item name="colorPrimaryVariant">#00B8D9</item>
+        <item name="colorOnPrimary">#070D14</item>
+        <item name="android:statusBarColor">#070D14</item>
+        <item name="android:navigationBarColor">#070D14</item>
+        <item name="android:windowBackground">#070D14</item>
+    </style>
+</resources>
