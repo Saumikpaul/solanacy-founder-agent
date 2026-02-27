@@ -10,10 +10,18 @@ import java.util.*
 
 object MemoryManager {
 
-    private fun getMemoryFile(): File {
+    private fun getMemoryDir(): File {
         val dir = File(Environment.getExternalStorageDirectory(), "Solanacy/.memory")
         dir.mkdirs()
-        return File(dir, "context.json")
+        return dir
+    }
+
+    private fun getMemoryFile(): File {
+        return File(getMemoryDir(), "context.json")
+    }
+
+    private fun getTaskFile(): File {
+        return File(getMemoryDir(), "current_task.txt")
     }
 
     fun saveEvent(context: Context, role: String, content: String) {
@@ -58,7 +66,23 @@ object MemoryManager {
         } catch (e: Exception) { "" }
     }
 
+    fun saveCurrentTask(task: String) {
+        try {
+            getTaskFile().writeText(task)
+        } catch (e: Exception) {}
+    }
+
+    fun getCurrentTask(): String {
+        return try {
+            val file = getTaskFile()
+            if (file.exists()) file.readText() else "No active task."
+        } catch (e: Exception) { "No active task." }
+    }
+
     fun clearMemory() {
-        try { getMemoryFile().delete() } catch (e: Exception) {}
+        try { 
+            getMemoryFile().delete()
+            getTaskFile().delete()
+        } catch (e: Exception) {}
     }
 }

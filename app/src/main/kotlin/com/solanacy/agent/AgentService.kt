@@ -5,15 +5,18 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
+import android.net.wifi.WifiManager
 import android.os.Binder
 import android.os.Environment
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.*
@@ -39,18 +42,27 @@ class AgentService : Service() {
     private var audioTrack: AudioTrack? = null
     private val isRecording = AtomicBoolean(false)
     private val isAiSpeaking = AtomicBoolean(false)
-    private val audioOutputQueue = LinkedBlockingQueue<ByteArray>(200)
+    
+    // 🚀 FIX: Increased Audio Buffer Size to 1000
+    private val audioOutputQueue = LinkedBlockingQueue<ByteArray>(1000)
+    
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var pingJob: Job? = null
     private var reconnectJob: Job? = null
     private var recordingJob: Job? = null
     private var playbackJob: Job? = null
     private var gitHub: GitHubApi? = null
+    
+    // 🚀 FIX: WakeLock & WifiLock to prevent disconnects
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
 
     private val backendUrl get(): String {
         val user = TokenManager.getUser(this)
         val memory = MemoryManager.getContextSummary()
-        val encoded = java.net.URLEncoder.encode(memory.take(500), "UTF-8")
+        val currentTask = MemoryManager.getCurrentTask()
+        val combinedContext = "CURRENT ACTIVE TASK:\n$currentTask\n\n$memory"
+        val encoded = java.net.URLEncoder.encode(combinedContext.take(1500), "UTF-8")
         return "wss://solanacy-agent-backend.onrender.com?name=$user&memory=$encoded"
     }
 
@@ -75,6 +87,25 @@ class AgentService : Service() {
         if (token.isNotBlank()) gitHub = GitHubApi(token, user)
     }
 
+    private fun acquireLocks() {
+        try {
+            val powerManager = getSystemService(Context.POWER_SERVICE) as PowerManager
+            wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Solanacy::AgentWakeLock")
+            wakeLock?.acquire(12 * 60 * 60 * 1000L) // Max 12 hours lock
+
+            val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            wifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "Solanacy::AgentWifiLock")
+            wifiLock?.acquire()
+        } catch (e: Exception) {
+            callback?.onLog("⚠️ Lock info: ${e.message}")
+        }
+    }
+
+    private fun releaseLocks() {
+        try { if (wakeLock?.isHeld == true) wakeLock?.release() } catch (e: Exception) {}
+        try { if (wifiLock?.isHeld == true) wifiLock?.release() } catch (e: Exception) {}
+    }
+
     fun toggle() {
         if (isConnected || shouldReconnect) disconnect()
         else connect()
@@ -88,6 +119,7 @@ class AgentService : Service() {
             return
         }
         shouldReconnect = true
+        acquireLocks()
         doConnect()
     }
 
@@ -131,6 +163,10 @@ class AgentService : Service() {
                 callback?.onLog("⚠️ Error: ${ex?.message}")
             }
         }
+        
+        // 🚀 FIX: Prevent aggressive disconnects by allowing 120s timeout
+        wsClient?.connectionLostTimeout = 120 
+        
         try { wsClient?.connect() }
         catch (e: Exception) { callback?.onLog("⚠️ Connect failed: ${e.message}") }
     }
@@ -143,6 +179,7 @@ class AgentService : Service() {
         stopAudioStreaming()
         try { wsClient?.close() } catch (e: Exception) {}
         isConnected = false
+        releaseLocks()
         callback?.onLog("Disconnected by user.")
         callback?.onStatusChanged("Disconnected")
     }
@@ -166,7 +203,8 @@ class AgentService : Service() {
     private fun startPing() {
         pingJob = scope.launch {
             while (isConnected) {
-                delay(20000)
+                // 🚀 FIX: Faster ping interval (every 15 sec) to keep Render backend completely awake
+                delay(15000)
                 try { if (wsClient?.isOpen == true) wsClient?.sendPing() }
                 catch (e: Exception) {}
             }
@@ -201,12 +239,14 @@ class AgentService : Service() {
             val outMinBuffer = AudioTrack.getMinBufferSize(
                 outputSampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT
             )
+            
+            // 🚀 FIX: Increased AudioTrack buffer size from 16384 to 32768
             val at = AudioTrack.Builder()
                 .setAudioFormat(AudioFormat.Builder()
                     .setSampleRate(outputSampleRate)
                     .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                     .setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
-                .setBufferSizeInBytes(maxOf(outMinBuffer, 16384))
+                .setBufferSizeInBytes(maxOf(outMinBuffer, 32768))
                 .setTransferMode(AudioTrack.MODE_STREAM).build()
 
             audioRecord = ar
@@ -220,10 +260,12 @@ class AgentService : Service() {
             playbackJob = scope.launch(Dispatchers.IO) {
                 while (isRecording.get()) {
                     try {
-                        val data = audioOutputQueue.poll(100, java.util.concurrent.TimeUnit.MILLISECONDS)
+                        // 🚀 FIX: Give network a 200ms grace period instead of 100ms
+                        val data = audioOutputQueue.poll(200, java.util.concurrent.TimeUnit.MILLISECONDS)
                         if (data != null) {
                             isAiSpeaking.set(true)
                             audioTrack?.write(data, 0, data.size)
+                        } else {
                             if (audioOutputQueue.isEmpty()) isAiSpeaking.set(false)
                         }
                     } catch (e: Exception) { break }
@@ -374,6 +416,12 @@ class AgentService : Service() {
                 "showStatus" -> {
                     callback?.onLog("📡 ${args.getString("message")}")
                     "Status shown"
+                }
+                "updateCurrentTask" -> {
+                    val task = args.getString("task")
+                    MemoryManager.saveCurrentTask(task)
+                    callback?.onLog("📌 Task Saved: ${task.take(30)}...")
+                    "Current task state saved successfully to memory."
                 }
                 "openUrl" -> {
                     val url = args.getString("url")
