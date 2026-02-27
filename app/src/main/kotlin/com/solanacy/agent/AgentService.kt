@@ -217,12 +217,26 @@ class AgentService : Service() {
             callback?.onStatusChanged("Listening...")
 
             playbackJob = scope.launch(Dispatchers.IO) {
+                val accumulator = java.io.ByteArrayOutputStream()
                 while (isRecording.get()) {
                     try {
-                        val data = audioOutputQueue.poll(100, java.util.concurrent.TimeUnit.MILLISECONDS)
+                        val data = audioOutputQueue.poll(30, java.util.concurrent.TimeUnit.MILLISECONDS)
                         if (data != null) {
                             isAiSpeaking.set(true)
-                            audioTrack?.write(data, 0, data.size)
+                            accumulator.write(data)
+                            // Write when we have enough data — 8192 bytes
+                            if (accumulator.size() >= 8192) {
+                                val chunk = accumulator.toByteArray()
+                                accumulator.reset()
+                                audioTrack?.write(chunk, 0, chunk.size)
+                            }
+                        } else {
+                            // Queue empty — flush remaining
+                            if (accumulator.size() > 0) {
+                                val chunk = accumulator.toByteArray()
+                                accumulator.reset()
+                                audioTrack?.write(chunk, 0, chunk.size)
+                            }
                             if (audioOutputQueue.isEmpty()) isAiSpeaking.set(false)
                         }
                     } catch (e: Exception) { break }
