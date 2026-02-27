@@ -23,6 +23,7 @@ import org.json.JSONObject
 import java.net.URI
 import android.util.Base64
 import java.io.File
+import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.atomic.AtomicBoolean
 
 class AgentService : Service() {
@@ -36,10 +37,12 @@ class AgentService : Service() {
     private var audioRecord: AudioRecord? = null
     private var audioTrack: AudioTrack? = null
     private val isRecording = AtomicBoolean(false)
+    private val audioOutputQueue = LinkedBlockingQueue<ByteArray>(100)
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var pingJob: Job? = null
     private var reconnectJob: Job? = null
     private var recordingJob: Job? = null
+    private var playbackJob: Job? = null
     private var gitHub: GitHubApi? = null
 
     private val backendUrl get() = "wss://solanacy-agent-backend.onrender.com?name=${TokenManager.getUser(this)}"
@@ -141,6 +144,8 @@ class AgentService : Service() {
     private fun stopAudioStreaming() {
         isRecording.set(false)
         recordingJob?.cancel()
+        playbackJob?.cancel()
+        audioOutputQueue.clear()
         try { audioRecord?.stop(); audioRecord?.release(); audioRecord = null } catch (e: Exception) {}
         try { audioTrack?.stop(); audioTrack?.release(); audioTrack = null } catch (e: Exception) {}
     }
@@ -157,26 +162,30 @@ class AgentService : Service() {
 
     private fun startAudioStreaming() {
         try {
-            val sampleRate = 16000
+            val inputSampleRate = 16000
+            // 100ms chunk = 1600 samples = 3200 bytes
+            val chunkSamples = 1600
+            val chunkBytes = chunkSamples * 2
+
             val minBuffer = AudioRecord.getMinBufferSize(
-                sampleRate,
+                inputSampleRate,
                 AudioFormat.CHANNEL_IN_MONO,
                 AudioFormat.ENCODING_PCM_16BIT
             )
 
-            if (minBuffer == AudioRecord.ERROR || minBuffer == AudioRecord.ERROR_BAD_VALUE) {
+            if (minBuffer <= 0) {
                 callback?.onLog("⚠️ AudioRecord not supported!")
                 return
             }
 
-            val bufferSize = maxOf(minBuffer * 2, 8192)
+            val recordBufferSize = maxOf(minBuffer, chunkBytes * 2)
 
             val ar = AudioRecord(
                 MediaRecorder.AudioSource.MIC,
-                sampleRate,
+                inputSampleRate,
                 AudioFormat.CHANNEL_IN_MONO,
                 AudioFormat.ENCODING_PCM_16BIT,
-                bufferSize
+                recordBufferSize
             )
 
             if (ar.state != AudioRecord.STATE_INITIALIZED) {
@@ -185,14 +194,18 @@ class AgentService : Service() {
                 return
             }
 
-            val outBufferSize = maxOf(
-                AudioTrack.getMinBufferSize(24000, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT),
-                8192
+            // AudioTrack for playback
+            val outputSampleRate = 24000
+            val outMinBuffer = AudioTrack.getMinBufferSize(
+                outputSampleRate,
+                AudioFormat.CHANNEL_OUT_MONO,
+                AudioFormat.ENCODING_PCM_16BIT
             )
+            val outBufferSize = maxOf(outMinBuffer, 8192)
 
             val at = AudioTrack.Builder()
                 .setAudioFormat(AudioFormat.Builder()
-                    .setSampleRate(24000)
+                    .setSampleRate(outputSampleRate)
                     .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
                     .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                     .build())
@@ -202,7 +215,6 @@ class AgentService : Service() {
 
             audioRecord = ar
             audioTrack = at
-
             at.play()
             ar.startRecording()
             isRecording.set(true)
@@ -210,11 +222,24 @@ class AgentService : Service() {
             callback?.onLog("🎙️ Microphone active. Speak now!")
             callback?.onStatusChanged("Listening...")
 
+            // Playback job — separate thread
+            playbackJob = scope.launch(Dispatchers.IO) {
+                while (isRecording.get()) {
+                    try {
+                        val data = audioOutputQueue.poll(100, java.util.concurrent.TimeUnit.MILLISECONDS)
+                        if (data != null && audioTrack?.state == AudioTrack.STATE_INITIALIZED) {
+                            audioTrack?.write(data, 0, data.size)
+                        }
+                    } catch (e: Exception) { break }
+                }
+            }
+
+            // Recording job
             recordingJob = scope.launch(Dispatchers.IO) {
-                val buffer = ShortArray(bufferSize / 2)
+                val buffer = ShortArray(chunkSamples)
                 while (isRecording.get() && isConnected) {
                     try {
-                        val read = ar.read(buffer, 0, buffer.size)
+                        val read = ar.read(buffer, 0, chunkSamples)
                         if (read > 0 && wsClient?.isOpen == true && geminiReady) {
                             val bytes = ByteArray(read * 2)
                             for (i in 0 until read) {
@@ -233,10 +258,9 @@ class AgentService : Service() {
                                 })
                             }
                             wsClient?.send(json.toString())
-                            delay(20)
                         }
                     } catch (e: Exception) {
-                        if (isRecording.get()) callback?.onLog("⚠️ Audio read error: ${e.message}")
+                        if (isRecording.get()) callback?.onLog("⚠️ Audio error: ${e.message}")
                         break
                     }
                 }
@@ -267,10 +291,9 @@ class AgentService : Service() {
                     if (inlineData != null) {
                         try {
                             val audioData = Base64.decode(inlineData.getString("data"), Base64.NO_WRAP)
-                            audioTrack?.write(audioData, 0, audioData.size)
-                        } catch (e: Exception) {
-                            callback?.onLog("⚠️ Audio output error: ${e.message}")
-                        }
+                            // Queue এ দাও — blocking করবে না
+                            audioOutputQueue.offer(audioData)
+                        } catch (e: Exception) {}
                     }
                 }
             }
@@ -378,7 +401,7 @@ class AgentService : Service() {
                 }
                 "githubPush" -> {
                     val repo = args.getString("repo")
-                    val message = args.getString("message")
+                    val commitMsg = args.getString("message")
                     val files = args.optJSONArray("files")
                     if (files != null && gitHub != null) {
                         val results = mutableListOf<String>()
@@ -386,7 +409,7 @@ class AgentService : Service() {
                             val f = files.getJSONObject(i)
                             val path = f.getString("path")
                             val content = f.getString("content")
-                            val r = gitHub!!.pushFile(repo, path, content, message)
+                            val r = gitHub!!.pushFile(repo, path, content, commitMsg)
                             callback?.onLog("🚀 $r")
                             results.add(r)
                         }
