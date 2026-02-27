@@ -31,6 +31,7 @@ class AgentService : Service() {
     private var wsClient: WebSocketClient? = null
     private var isConnected = false
     private var shouldReconnect = false
+    private var geminiReady = false
     private var audioRecord: AudioRecord? = null
     private var audioTrack: AudioTrack? = null
     private var isRecording = false
@@ -39,7 +40,7 @@ class AgentService : Service() {
     private var reconnectJob: Job? = null
     private var gitHub: GitHubApi? = null
 
-    val BACKEND_URL = "wss://solanacy-agent-backend.onrender.com?name=Saumik"
+    private val backendUrl get() = "wss://solanacy-agent-backend.onrender.com?name=${TokenManager.getUser(this)}"
 
     interface AgentCallback {
         fun onLog(message: String)
@@ -59,9 +60,7 @@ class AgentService : Service() {
         startForeground(1, buildNotification())
         val token = TokenManager.getToken(this)
         val user = TokenManager.getUser(this)
-        if (token.isNotBlank()) {
-            gitHub = GitHubApi(token, user)
-        }
+        if (token.isNotBlank()) gitHub = GitHubApi(token, user)
     }
 
     fun toggle() {
@@ -81,18 +80,17 @@ class AgentService : Service() {
     }
 
     private fun doConnect() {
+        geminiReady = false
         callback?.onLog("Connecting to Solanacy Agent...")
         callback?.onStatusChanged("Connecting...")
 
-        val uri = URI(BACKEND_URL)
+        val uri = URI(backendUrl)
         wsClient = object : WebSocketClient(uri) {
             override fun onOpen(handshakedata: ServerHandshake?) {
                 isConnected = true
-                callback?.onLog("🚀 Connected! Solanacy Founder AI is ready.")
-                callback?.onStatusChanged("Listening...")
+                callback?.onLog("🚀 Connected! Waiting for Gemini setup...")
+                callback?.onStatusChanged("Connecting...")
                 startPing()
-                try { startAudioStreaming() }
-                catch (e: Exception) { callback?.onLog("⚠️ Audio error: ${e.message}") }
             }
 
             override fun onMessage(message: String?) {
@@ -103,6 +101,7 @@ class AgentService : Service() {
             override fun onClose(code: Int, reason: String?, remote: Boolean) {
                 isConnected = false
                 isRecording = false
+                geminiReady = false
                 pingJob?.cancel()
                 try { audioRecord?.stop() } catch (e: Exception) {}
                 try { audioTrack?.stop() } catch (e: Exception) {}
@@ -130,6 +129,7 @@ class AgentService : Service() {
     fun disconnect() {
         shouldReconnect = false
         isRecording = false
+        geminiReady = false
         pingJob?.cancel()
         reconnectJob?.cancel()
         try { wsClient?.close() } catch (e: Exception) {}
@@ -188,6 +188,7 @@ class AgentService : Service() {
         audioRecord?.startRecording()
         isRecording = true
         callback?.onLog("🎙️ Microphone active. Speak now!")
+        callback?.onStatusChanged("Listening...")
 
         scope.launch {
             val buffer = ShortArray(bufferSize)
@@ -200,11 +201,12 @@ class AgentService : Service() {
                         bytes[i * 2 + 1] = (buffer[i].toInt() shr 8 and 0xFF).toByte()
                     }
                     val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+                    // ✅ camelCase fixed
                     val json = JSONObject().apply {
-                        put("realtime_input", JSONObject().apply {
-                            put("media_chunks", JSONArray().apply {
+                        put("realtimeInput", JSONObject().apply {
+                            put("mediaChunks", JSONArray().apply {
                                 put(JSONObject().apply {
-                                    put("mime_type", "audio/pcm")
+                                    put("mimeType", "audio/pcm;rate=16000")
                                     put("data", base64)
                                 })
                             })
@@ -220,11 +222,16 @@ class AgentService : Service() {
         try {
             val data = JSONObject(message)
 
+            // ✅ setupComplete এর পরে audio start
             if (data.has("setupComplete")) {
-                callback?.onLog("✅ Gemini setup complete!")
+                geminiReady = true
+                callback?.onLog("✅ Gemini ready!")
+                try { startAudioStreaming() }
+                catch (e: Exception) { callback?.onLog("⚠️ Audio error: ${e.message}") }
                 return
             }
 
+            // Audio output
             val serverContent = data.optJSONObject("serverContent")
             val modelTurn = serverContent?.optJSONObject("modelTurn")
             val parts = modelTurn?.optJSONArray("parts")
@@ -239,6 +246,7 @@ class AgentService : Service() {
                 }
             }
 
+            // Tool calls
             val toolCall = data.optJSONObject("toolCall")
             val functionCalls = toolCall?.optJSONArray("functionCalls")
             if (functionCalls != null) {
@@ -255,9 +263,10 @@ class AgentService : Service() {
                         put("response", JSONObject().apply { put("result", result) })
                     })
                 }
+                // ✅ camelCase fixed
                 wsClient?.send(JSONObject().apply {
-                    put("tool_response", JSONObject().apply {
-                        put("function_responses", responses)
+                    put("toolResponse", JSONObject().apply {
+                        put("functionResponses", responses)
                     })
                 }.toString())
             }
@@ -336,8 +345,7 @@ class AgentService : Service() {
                     val repoName = args.getString("name")
                     val desc = args.optString("description", "")
                     val isPrivate = args.optBoolean("isPrivate", false)
-                    val result = gitHub?.createRepo(repoName, desc, isPrivate)
-                        ?: "GitHub not configured"
+                    val result = gitHub?.createRepo(repoName, desc, isPrivate) ?: "GitHub not configured"
                     callback?.onLog("📦 $result")
                     result
                 }
@@ -371,9 +379,7 @@ class AgentService : Service() {
     }
 
     private fun createNotificationChannel() {
-        val channel = NotificationChannel(
-            "agent_channel", "Solanacy Agent", NotificationManager.IMPORTANCE_LOW
-        )
+        val channel = NotificationChannel("agent_channel", "Solanacy Agent", NotificationManager.IMPORTANCE_LOW)
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
