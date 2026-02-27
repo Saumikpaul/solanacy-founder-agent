@@ -23,6 +23,7 @@ import org.json.JSONObject
 import java.net.URI
 import android.util.Base64
 import java.io.File
+import java.util.concurrent.atomic.AtomicBoolean
 
 class AgentService : Service() {
 
@@ -34,10 +35,11 @@ class AgentService : Service() {
     private var geminiReady = false
     private var audioRecord: AudioRecord? = null
     private var audioTrack: AudioTrack? = null
-    private var isRecording = false
+    private val isRecording = AtomicBoolean(false)
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var pingJob: Job? = null
     private var reconnectJob: Job? = null
+    private var recordingJob: Job? = null
     private var gitHub: GitHubApi? = null
 
     private val backendUrl get() = "wss://solanacy-agent-backend.onrender.com?name=${TokenManager.getUser(this)}"
@@ -100,11 +102,9 @@ class AgentService : Service() {
 
             override fun onClose(code: Int, reason: String?, remote: Boolean) {
                 isConnected = false
-                isRecording = false
                 geminiReady = false
+                stopAudioStreaming()
                 pingJob?.cancel()
-                try { audioRecord?.stop() } catch (e: Exception) {}
-                try { audioTrack?.stop() } catch (e: Exception) {}
                 if (shouldReconnect) {
                     callback?.onLog("⚠️ Lost connection. Reconnecting in 5s...")
                     callback?.onStatusChanged("Reconnecting...")
@@ -128,16 +128,21 @@ class AgentService : Service() {
 
     fun disconnect() {
         shouldReconnect = false
-        isRecording = false
         geminiReady = false
         pingJob?.cancel()
         reconnectJob?.cancel()
+        stopAudioStreaming()
         try { wsClient?.close() } catch (e: Exception) {}
-        try { audioRecord?.stop() } catch (e: Exception) {}
-        try { audioTrack?.stop() } catch (e: Exception) {}
         isConnected = false
         callback?.onLog("Disconnected by user.")
         callback?.onStatusChanged("Disconnected")
+    }
+
+    private fun stopAudioStreaming() {
+        isRecording.set(false)
+        recordingJob?.cancel()
+        try { audioRecord?.stop(); audioRecord?.release(); audioRecord = null } catch (e: Exception) {}
+        try { audioTrack?.stop(); audioTrack?.release(); audioTrack = null } catch (e: Exception) {}
     }
 
     private fun startPing() {
@@ -151,70 +156,92 @@ class AgentService : Service() {
     }
 
     private fun startAudioStreaming() {
-        val sampleRate = 16000
-        val bufferSize = maxOf(
-            AudioRecord.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT),
-            4096
-        )
+        try {
+            val sampleRate = 16000
+            val minBuffer = AudioRecord.getMinBufferSize(
+                sampleRate,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT
+            )
 
-        audioRecord = AudioRecord(
-            MediaRecorder.AudioSource.MIC,
-            sampleRate,
-            AudioFormat.CHANNEL_IN_MONO,
-            AudioFormat.ENCODING_PCM_16BIT,
-            bufferSize
-        )
+            if (minBuffer == AudioRecord.ERROR || minBuffer == AudioRecord.ERROR_BAD_VALUE) {
+                callback?.onLog("⚠️ AudioRecord not supported!")
+                return
+            }
 
-        if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
-            callback?.onLog("⚠️ Microphone init failed!")
-            return
-        }
+            val bufferSize = maxOf(minBuffer * 2, 8192)
 
-        val outBufferSize = maxOf(
-            AudioTrack.getMinBufferSize(24000, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT),
-            4096
-        )
+            val ar = AudioRecord(
+                MediaRecorder.AudioSource.MIC,
+                sampleRate,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT,
+                bufferSize
+            )
 
-        audioTrack = AudioTrack.Builder()
-            .setAudioFormat(AudioFormat.Builder()
-                .setSampleRate(24000)
-                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                .build())
-            .setBufferSizeInBytes(outBufferSize)
-            .build()
+            if (ar.state != AudioRecord.STATE_INITIALIZED) {
+                callback?.onLog("⚠️ Microphone init failed!")
+                ar.release()
+                return
+            }
 
-        audioTrack?.play()
-        audioRecord?.startRecording()
-        isRecording = true
-        callback?.onLog("🎙️ Microphone active. Speak now!")
-        callback?.onStatusChanged("Listening...")
+            val outBufferSize = maxOf(
+                AudioTrack.getMinBufferSize(24000, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT),
+                8192
+            )
 
-        scope.launch {
-            val buffer = ShortArray(bufferSize)
-            while (isRecording && isConnected) {
-                val read = audioRecord?.read(buffer, 0, bufferSize) ?: 0
-                if (read > 0 && wsClient?.isOpen == true) {
-                    val bytes = ByteArray(read * 2)
-                    for (i in 0 until read) {
-                        bytes[i * 2] = (buffer[i].toInt() and 0xFF).toByte()
-                        bytes[i * 2 + 1] = (buffer[i].toInt() shr 8 and 0xFF).toByte()
-                    }
-                    val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
-                    // ✅ camelCase fixed
-                    val json = JSONObject().apply {
-                        put("realtimeInput", JSONObject().apply {
-                            put("mediaChunks", JSONArray().apply {
-                                put(JSONObject().apply {
-                                    put("mimeType", "audio/pcm;rate=16000")
-                                    put("data", base64)
+            val at = AudioTrack.Builder()
+                .setAudioFormat(AudioFormat.Builder()
+                    .setSampleRate(24000)
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                    .build())
+                .setBufferSizeInBytes(outBufferSize)
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                .build()
+
+            audioRecord = ar
+            audioTrack = at
+
+            at.play()
+            ar.startRecording()
+            isRecording.set(true)
+
+            callback?.onLog("🎙️ Microphone active. Speak now!")
+            callback?.onStatusChanged("Listening...")
+
+            recordingJob = scope.launch(Dispatchers.IO) {
+                val buffer = ShortArray(bufferSize / 2)
+                while (isRecording.get() && isConnected) {
+                    try {
+                        val read = ar.read(buffer, 0, buffer.size)
+                        if (read > 0 && wsClient?.isOpen == true && geminiReady) {
+                            val bytes = ByteArray(read * 2)
+                            for (i in 0 until read) {
+                                bytes[i * 2] = (buffer[i].toInt() and 0xFF).toByte()
+                                bytes[i * 2 + 1] = (buffer[i].toInt() shr 8 and 0xFF).toByte()
+                            }
+                            val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+                            val json = JSONObject().apply {
+                                put("realtimeInput", JSONObject().apply {
+                                    put("mediaChunks", JSONArray().apply {
+                                        put(JSONObject().apply {
+                                            put("mimeType", "audio/pcm;rate=16000")
+                                            put("data", base64)
+                                        })
+                                    })
                                 })
-                            })
-                        })
+                            }
+                            wsClient?.send(json.toString())
+                        }
+                    } catch (e: Exception) {
+                        if (isRecording.get()) callback?.onLog("⚠️ Audio read error: ${e.message}")
+                        break
                     }
-                    wsClient?.send(json.toString())
                 }
             }
+        } catch (e: Exception) {
+            callback?.onLog("⚠️ Audio setup error: ${e.message}")
         }
     }
 
@@ -222,16 +249,13 @@ class AgentService : Service() {
         try {
             val data = JSONObject(message)
 
-            // ✅ setupComplete এর পরে audio start
             if (data.has("setupComplete")) {
                 geminiReady = true
                 callback?.onLog("✅ Gemini ready!")
-                try { startAudioStreaming() }
-                catch (e: Exception) { callback?.onLog("⚠️ Audio error: ${e.message}") }
+                startAudioStreaming()
                 return
             }
 
-            // Audio output
             val serverContent = data.optJSONObject("serverContent")
             val modelTurn = serverContent?.optJSONObject("modelTurn")
             val parts = modelTurn?.optJSONArray("parts")
@@ -240,13 +264,16 @@ class AgentService : Service() {
                     val part = parts.getJSONObject(i)
                     val inlineData = part.optJSONObject("inlineData")
                     if (inlineData != null) {
-                        val audioData = Base64.decode(inlineData.getString("data"), Base64.NO_WRAP)
-                        audioTrack?.write(audioData, 0, audioData.size)
+                        try {
+                            val audioData = Base64.decode(inlineData.getString("data"), Base64.NO_WRAP)
+                            audioTrack?.write(audioData, 0, audioData.size)
+                        } catch (e: Exception) {
+                            callback?.onLog("⚠️ Audio output error: ${e.message}")
+                        }
                     }
                 }
             }
 
-            // Tool calls
             val toolCall = data.optJSONObject("toolCall")
             val functionCalls = toolCall?.optJSONArray("functionCalls")
             if (functionCalls != null) {
@@ -263,7 +290,6 @@ class AgentService : Service() {
                         put("response", JSONObject().apply { put("result", result) })
                     })
                 }
-                // ✅ camelCase fixed
                 wsClient?.send(JSONObject().apply {
                     put("toolResponse", JSONObject().apply {
                         put("functionResponses", responses)
